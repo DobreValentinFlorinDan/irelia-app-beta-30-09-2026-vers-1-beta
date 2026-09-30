@@ -1,32 +1,35 @@
-# React + TypeScript + Vite
+# Irelia Fieldbook
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A personal, local-only research tool for playing Irelia in League of Legends. It runs as a Vite + React single-page app with a small local Node middleware plugin that talks to the Riot web API and, optionally, your live League Client.
 
-Currently, two official plugins are available:
+## What it does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Your ranked baseline** — loads your last 20 ranked solo games (EUROPE routing) and reports your Irelia share, Irelia win rate, and recent matchups.
+- **Find Irelia one-tricks** — scans a bounded sample of the KR Challenger / Grandmaster / Master ladder, verifies TOP/MID Irelia specialists, and shows their builds, runes, keystones, and lane opponents.
+- **Draft composition** — plan a mock draft manually, or read your live champion select straight from the local League Client.
+- **Build and rune evidence** — aggregates the verified Korean OTP games into lane-route and composition-based item, rune, and purchase-order evidence for the current patch.
 
-## React Compiler
+Build frequencies and win rates shown are **observational**, not a guarantee of an optimal build.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Local setup
+1. Run `npm install`.
+2. Keep your Personal API key as `RIOT_API_KEY` in the root `.env.local`. It is read only by the local server; never expose it in the client.
+3. Run `npm run dev` and open `http://127.0.0.1:3000/`.
 
-## Expanding the Oxlint configuration
+Optional:
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- `LEAGUE_CLIENT_LOCKFILE` — set this only if your League Client is installed somewhere other than the default Riot Games path, so the live champion-select reader can find the lockfile.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+## Scripts
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+- `npm run dev`: start the Vite dev server with the local Riot API middleware.
+- `npm run build`: build the production bundle.
+- `npm run preview`: preview a production build.
+- `npm run lint`: run oxlint.
+
+## Notes
+
+- The Riot web API is rate-limited by a local queue (under 18 requests/second and 90 per two minutes per route). Riot key and endpoint limits may differ.
+- Live champion select is read directly from the local League Client lockfile; the Riot web API key is not used for it.
+- This is a private personal tool. Riot Games is not affiliated with it.
+
