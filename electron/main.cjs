@@ -124,6 +124,7 @@ function createWindow() {
     show: false,
     autoHideMenuBar: true,
     title: 'Irelia Build Tracker',
+    icon: path.join(__dirname, 'irelia.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -144,6 +145,12 @@ function createWindow() {
   const target = IS_DEV ? DEV_URL : BASE_URL
   void mainWindow.loadURL(target)
   return mainWindow
+}
+
+// Taskbar identity: gives the window the app's icon on the taskbar instead of
+// the generic Electron icon, and keeps its windows grouped under one entry.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('IreliaFieldbook')
 }
 
 app.whenReady().then(async () => {

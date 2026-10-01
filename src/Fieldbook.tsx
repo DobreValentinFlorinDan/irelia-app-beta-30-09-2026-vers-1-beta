@@ -1443,6 +1443,7 @@ type CoverageEntry = {
 
 type CoverageReport = {
   lane: string | null
+  patch: string
   target: number
   matchups: CoverageEntry[]
   coveredCount: number
@@ -1516,13 +1517,15 @@ function LiveGameBar({ live }: { live: LiveGame | null }) {
 /* ============================ Data Management ============================ */
 
 function DataManagementView({
-  cacheStats, statsLoading, onRefreshStats,
+  cacheStats, statsLoading, onRefreshStats, refreshTick,
   scan, progress, busy, onScan, onStop, onRefresh, apiReady, clientStatus,
   championFiles, patch, onCacheCleared, onDataChanged,
 }: {
   cacheStats: CacheStats | null
   statsLoading: boolean
   onRefreshStats: () => void
+  /** Bumped by "Reload counters" so this view's own fetches run again too. */
+  refreshTick: number
   scan: OtpScan | null
   progress: ScanProgress | null
   busy: string | null
@@ -1578,7 +1581,7 @@ function DataManagementView({
       .then((data) => { if (!cancelled) setCoverage(data) })
       .catch(() => { if (!cancelled) setCoverage(null) })
     return () => { cancelled = true }
-  }, [coverageLane])
+  }, [coverageLane, refreshTick])
 
   /**
    * Walks the last scan's one-tricks backwards through their match history until
@@ -1659,7 +1662,7 @@ function DataManagementView({
       .then((data) => { if (!cancelled) setMatchups(data.matchups) })
       .catch(() => { if (!cancelled) setMatchups(null) })
     return () => { cancelled = true }
-  }, [])
+  }, [refreshTick])
 
   return (
     <div className="view-grid">
@@ -1788,7 +1791,7 @@ function DataManagementView({
           <div className="coverage-summary">
             <div className="stat-row">
               <div className="stat-cell">
-                <span>Matchups at {coverage.target}+ games</span>
+                <span>Matchups at {coverage.target}+ games · patch {coverage.patch}</span>
                 <strong>{coverage.coveredCount} / {coverage.totalCount}</strong>
               </div>
               <div className="stat-cell">
@@ -1802,9 +1805,10 @@ function DataManagementView({
             </div>
             <p className="microcopy">
               A scan pulls each one-trick&apos;s most recent games once. Deepening walks
-              {' '}<em>further back</em> through their history — with no time limit — and keeps pulling until every
-              matchup reaches {coverage.target} games, the history runs out, or the request budget is spent. The
-              thinnest matchups are listed first below.
+              {' '}<em>further back</em> through their history and keeps pulling until every
+              matchup reaches {coverage.target} games <em>on the current patch</em>, the history runs out, or the
+              request budget is spent. Games from older patches never count toward the target. The thinnest
+              matchups are listed first below.
             </p>
           </div>
         )}
@@ -1986,6 +1990,12 @@ function App() {
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
   const [liveGame, setLiveGame] = useState<LiveGame | null>(null)
+  /**
+   * Bumped by tab switches and the Reload counters button. Views key their own
+   * fetches to it so a headless rebuild (the builder script runs outside the
+   * app) is visible without restarting, and every field refreshes together.
+   */
+  const [dataVersion, setDataVersion] = useState(0)
 
   useEffect(() => {
     void apiGet<ApiStatus>('/api/status').then(setApiStatus).catch(() => setApiStatus({ configured: false, mode: 'local', usage: emptyApiUsage }))
@@ -2132,7 +2142,7 @@ function App() {
   useEffect(() => {
     void fetchDockBuild(dockLane, dockOpponent)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dockLane, dockOpponent, activePatch, scan])
+  }, [dockLane, dockOpponent, activePatch, scan, dataVersion])
 
   /**
    * Draft build: mirrors the Dock build but is driven by the Draft view picks.
@@ -2218,7 +2228,7 @@ function App() {
       .catch(() => { if (!cancelled) setMeta(null) })
       .finally(() => { if (!cancelled) setMetaLoading(false) })
     return () => { cancelled = true }
-  }, [view, dockLane, activePatch, scan, sinceHours])
+  }, [view, dockLane, activePatch, scan, sinceHours, dataVersion])
 
   useEffect(() => { writeLocal('irelia-fieldbook-since', sinceHours) }, [sinceHours])
 
@@ -2255,6 +2265,22 @@ function App() {
     } finally {
       setStatsLoading(false)
     }
+  }
+
+  /**
+   * Refreshes every number the UI shows, together. The scan snapshot refetch is
+   * the linchpin: replacing it re-triggers the meta, build and cache-stat
+   * effects through their `scan` dependency, and the dataVersion bump covers
+   * the panels that key on it directly (coverage, matchups). All calls are to
+   * the local server, so this is cheap and safe to run on every tab switch.
+   */
+  function refreshAllData() {
+    refreshApiStatus()
+    void refreshCacheStats()
+    void apiGet<{ scan: OtpScan | null }>('/api/riot/scan')
+      .then((data) => { if (data.scan) setScan(data.scan) })
+      .catch(() => {})
+    setDataVersion((version) => version + 1)
   }
 
   /**
@@ -2513,6 +2539,9 @@ function App() {
               } else {
                 setView(item.id)
               }
+              // Switching tabs re-reads the disk state so a headless rebuild is
+              // never displayed stale. All local calls; see refreshAllData.
+              refreshAllData()
             }}
           >
             {item.label}
@@ -2669,7 +2698,8 @@ function App() {
         <DataManagementView
           cacheStats={cacheStats}
           statsLoading={statsLoading}
-          onRefreshStats={refreshCacheStats}
+          onRefreshStats={refreshAllData}
+          refreshTick={dataVersion}
           scan={scan}
           progress={scanProgress}
           busy={busy}
