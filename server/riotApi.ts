@@ -9,6 +9,7 @@ import {
   buildMatchData,
   flushIreliaIndex,
   getCachedMatch,
+  getCachedMatchForPlayer,
   getPlayerPosition,
   loadCacheWideIreliaMatches,
 } from './buildEngine.js'
@@ -1402,7 +1403,11 @@ export async function runKoreanScan(
       // here first only parsed every match body twice. `hasCache` answers the
       // hit/miss bookkeeping without the second JSON parse.
       const alreadyCached = await hasCache('matches', matchId)
-      const match = await getCachedMatch(fetchJson, matchId, candidate.routing.regional)
+      // Player-aware variant: a body cached before a Riot puuid migration no
+      // longer contains the account's current puuid, so the plain cache read
+      // would make the account look like it never played. This re-fetches and
+      // overwrites the stale body once, on first contact.
+      const match = await getCachedMatchForPlayer(fetchJson, matchId, candidate.puuid, candidate.routing.regional)
       if (alreadyCached) cacheHits += 1
       else newGames += 1
       if (match.info.queueId !== 420) {

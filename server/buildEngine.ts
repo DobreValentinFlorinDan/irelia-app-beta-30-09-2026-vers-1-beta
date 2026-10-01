@@ -51,6 +51,30 @@ export async function getCachedMatch(fetchJson: RiotFetch, matchId: string, rout
   })
 }
 
+/**
+ * Like getCachedMatch, but re-fetches and overwrites the cached body once when
+ * the given puuid is missing from it.
+ *
+ * Riot re-attributes historical matches to a new puuid after region transfers
+ * (and past puuid rotations), so a body cached before the migration no longer
+ * contains the account's *current* puuid even though the match is their own.
+ * Callers that join matchlists (by current puuid) to cached bodies must use
+ * this variant or every migrated account looks like it has no games.
+ */
+export async function getCachedMatchForPlayer(
+  fetchJson: RiotFetch,
+  matchId: string,
+  puuid: string,
+  routing: Routing = 'ASIA',
+): Promise<MatchRecord> {
+  const cached = await getCachedMatch(fetchJson, matchId, routing)
+  if (cached.info.participants.some((entry) => entry.puuid === puuid)) return cached
+  const fresh = await fetchJson<MatchRecord>(routing, `/lol/match/v5/matches/${encodeURIComponent(matchId)}`)
+  await writeCache('matches', matchId, fresh)
+  noteIreliaMatch(fresh)
+  return fresh
+}
+
 export async function getCachedTimeline(fetchJson: RiotFetch, matchId: string, routing: Routing = 'ASIA') {
   const cached = await readCache<TimelineRecord>('timelines', matchId)
   if (cached) return cached
