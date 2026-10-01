@@ -132,17 +132,23 @@ function elapsed() {
 }
 
 // The engine reports on every single match, which is far too chatty for a log
-// that may run for an hour. Print a phase change immediately, otherwise at most
-// one line every few seconds.
+// that may run for an hour. Print a real phase change immediately, otherwise at
+// most one line per interval.
+//
+// `ratelimit` is deliberately NOT treated as a phase change: the engine emits it
+// every time the token bucket parks, and it interleaves with whatever phase was
+// running, so counting it as a change made the log print every few seconds for
+// the whole run.
 const PRINT_INTERVAL_MS = quiet ? 30_000 : 5_000
 let lastPrintAt = 0
 let lastPhase = ''
 
 function report(update) {
   const now = Date.now()
-  const phaseChanged = update.phase !== lastPhase
+  const isRateLimit = update.phase === 'ratelimit'
+  const phaseChanged = !isRateLimit && update.phase !== lastPhase
   if (!phaseChanged && now - lastPrintAt < PRINT_INTERVAL_MS) return
-  lastPhase = update.phase
+  if (!isRateLimit) lastPhase = update.phase
   lastPrintAt = now
   const progress = update.total ? ` (${update.done}/${update.total})` : ''
   console.log(`[${elapsed()}] ${update.phase}: ${update.message}${progress}`)
