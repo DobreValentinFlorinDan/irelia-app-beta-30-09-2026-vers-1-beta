@@ -1528,8 +1528,13 @@ export async function buildRecommendation(patch: string, request: BuildRequest):
   for (const match of fromScan) byMatchId.set(match.matchId, match)
   const verified = [...byMatchId.values()]
 
-  const exact = patch ? verified.filter((match) => match.patch === patch) : verified
-  const patchExact = patch ? exact.length > 0 : false
+  // An empty patch means "the most recent patch with data", and that has to be
+  // resolved BEFORE filtering. Resolving it only for the label (as this did)
+  // left the pool spanning every patch on disk — including games many patches
+  // old — while the response still described itself as the newest patch.
+  const effectivePatch = patch || mostRecentPatch(verified)
+  const exact = effectivePatch ? verified.filter((match) => match.patch === effectivePatch) : verified
+  const patchExact = exact.length > 0
   // Never fall back to a wider pool than the one being described, so the
   // reported sample size always matches the matches actually aggregated.
   const pool = patchExact ? exact : verified
@@ -1545,12 +1550,12 @@ export async function buildRecommendation(patch: string, request: BuildRequest):
       // so the page always leads with a usable baseline build.
       matches = pool
       reason = pool.length
-        ? `All Irelia ${lane} games captured${patchExact ? ` on patch ${patch}` : ' (most recent patch with data)'}. Pick a lane opponent to narrow this to the matchup.`
+        ? `All Irelia ${lane} games captured${patchExact ? ` on patch ${effectivePatch}` : ' (most recent patch with data)'}. Pick a lane opponent to narrow this to the matchup.`
         : 'No Irelia games captured for this lane yet.'
     } else {
       matches = pool.filter((match) => match.opponentChampionId === request.opponent)
       reason = matches.length
-        ? `Games where Irelia mains faced your lane opponent${patchExact ? ` on patch ${patch}` : ' (most recent patch with data)'}.`
+        ? `Games where Irelia mains faced your lane opponent${patchExact ? ` on patch ${effectivePatch}` : ' (most recent patch with data)'}.`
         : 'No captured Irelia games against this opponent yet. Scan again or try the composition view.'
     }
   } else if (!request.allies.length && !request.enemies.length) {
@@ -1601,7 +1606,7 @@ export async function buildRecommendation(patch: string, request: BuildRequest):
     // Report which patch the evidence actually came from. When no patch filter
     // was supplied the caller still needs to know, so derive it from the matches
     // that were aggregated rather than echoing back an empty string.
-    patch: patch || mostRecentPatch(matches),
+    patch: effectivePatch,
     patchExact,
     games: matches.length,
     profile: aggregateProfile(matches, request.source, itemGold),
@@ -1749,8 +1754,11 @@ async function buildMatchups(patch: string, lane: OtpRole): Promise<MatchupsResp
   const all = (await loadCacheWideIreliaMatches())
     .filter((match) => !match.position || match.position === lane || match.position === 'UNKNOWN')
 
-  const exact = patch ? all.filter((match) => match.patch === patch) : all
-  const pool = patch && exact.length ? exact : all
+  // Same rule as buildRecommendation: resolve an empty patch to the newest one
+  // with data before filtering, so the pool matches the patch being reported.
+  const effectivePatch = patch || mostRecentPatch(all)
+  const exact = effectivePatch ? all.filter((match) => match.patch === effectivePatch) : all
+  const pool = exact.length ? exact : all
 
   const baseWins = pool.filter((match) => match.win).length
   const baseWinRate = pool.length ? baseWins / pool.length : 0
@@ -1784,7 +1792,7 @@ async function buildMatchups(patch: string, lane: OtpRole): Promise<MatchupsResp
     })
     .sort((a, b) => b.games - a.games)
 
-  return { lane, patch: patch || mostRecentPatch(pool), baseGames: pool.length, baseWinRate, matchups }
+  return { lane, patch: effectivePatch, baseGames: pool.length, baseWinRate, matchups }
 }
 
 async function buildMeta(patch: string, lane: OtpRole, limit: number, sinceHours: number): Promise<MetaResponse> {
@@ -1796,8 +1804,12 @@ async function buildMeta(patch: string, lane: OtpRole, limit: number, sinceHours
   const sinceCutoff = sinceHours > 0 ? Date.now() - sinceHours * 3_600_000 : 0
   const inWindow = sinceHours > 0 ? all.filter((match) => match.gameCreation >= sinceCutoff) : all
 
-  const exact = patch ? inWindow.filter((match) => match.patch === patch) : inWindow
-  const patchExact = patch ? exact.length > 0 : false
+  // Resolve an empty patch before filtering, for the same reason as
+  // buildRecommendation: otherwise the pool spans every patch on disk while
+  // the response advertises no patch at all.
+  const effectivePatch = patch || mostRecentPatch(inWindow)
+  const exact = effectivePatch ? inWindow.filter((match) => match.patch === effectivePatch) : inWindow
+  const patchExact = exact.length > 0
   const pool = patchExact ? exact : inWindow
 
   const { banRate, games: banSampleGames } = await sampledBanRate()
@@ -1833,7 +1845,7 @@ async function buildMeta(patch: string, lane: OtpRole, limit: number, sinceHours
       region: match.region,
     }))
 
-  return { lane, patch, patchExact, banRate, banSampleGames, games }
+  return { lane, patch: effectivePatch, patchExact, banRate, banSampleGames, games }
 }
 
 /* ------------------------------------------------------------------ *
