@@ -611,9 +611,13 @@ export async function deepenOpponent(
   let matchesAdded = 0
   let stopReason = 'history-exhausted'
 
+  // Walk order matters: the freshest games — the ones most likely to be on the
+  // patch coverage is measuring — are page 0 of EVERY main. Walking one main's
+  // whole history before the next main's first page spends the budget on
+  // stale-patch bodies that the patch guard then rejects.
   outer:
-  for (const puuid of mains) {
-    for (let page = 0; page < 5; page += 1) {
+  for (let page = 0; page < 5; page += 1) {
+    for (const puuid of mains) {
       if (requestsUsed >= maxRequests) { stopReason = 'budget'; break outer }
       const ids = await riotGet<string[]>(
         getActiveApiKey(),
@@ -621,7 +625,7 @@ export async function deepenOpponent(
         `/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?queue=420&count=${pageSize}&start=${page * pageSize}`,
       )
       requestsUsed += 1
-      if (!ids.length) break
+      if (!ids.length) continue
 
       for (const matchId of ids) {
         if (requestsUsed >= maxRequests) { stopReason = 'budget'; break outer }
