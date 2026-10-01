@@ -463,6 +463,13 @@
   text-align: right;
 }
 
+/* "✓ best in slot" consensus badge in the OTP comparison tables. */
+.ot-item-row .ot-row-games.ot-match-badge {
+  color: var(--ot-win);
+  font-weight: 700;
+  min-width: 74px;
+}
+
 /* --------------------------------- runes --------------------------------- */
 
 .ot-rune-set-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }

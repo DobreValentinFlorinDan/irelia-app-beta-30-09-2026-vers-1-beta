@@ -964,18 +964,38 @@ type OtpSlotOptionData = {
   score: number
 }
 
-type OtpBuildLite = {
-  games: number
-  winRate: number
-  slots: Array<{ slot: number; options: Array<{ id: number; games: number; share: number; winRate: number }> }>
+type OtpSlotData = {
+  slot: number
+  fieldTopId: number | null
+  otpTopId: number | null
+  bestId: number | null
+  matches: boolean
+  options: OtpSlotOptionData[]
+}
+
+type OtpMatchupData = {
+  opponentChampionId: number
+  opponentName: string
+  otpGames: number
+  fieldGames: number
+  otpFirstItemId: number | null
+  fieldFirstItemId: number | null
+  bestId: number | null
+  matches: boolean
 }
 
 type OtpCompareData = {
   patch: string
-  otp: { riotId: string; games: number; winRate: number; profile: { slots: OtpBuildLite['slots'] }; byOpponent: Record<string, OtpBuildLite> }
-  baseline: { games: number; winRate: number; byOpponent: Record<string, OtpBuildLite> }
+  otp: {
+    riotId: string
+    games: number
+    winRate: number
+    byPatch: Array<{ patch: string; weight: number; games: number }>
+  }
+  baseline: { games: number; winRate: number }
   previous: { riotId: string; patch: string; ireliaGames: number } | null
-  slots: Array<{ slot: number; bestId: number | null; options: OtpSlotOptionData[] }>
+  slots: OtpSlotData[]
+  matchups: OtpMatchupData[]
 }
 
 function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragonVersion }: {
@@ -1024,41 +1044,48 @@ function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragon
   }
 
   const itemName = (id: number) => itemCatalog.get(id)?.name ?? `Item ${id}`
-  const otpSlotPick = (slot: number) => data.otp.profile?.slots?.find((entry) => entry.slot === slot)?.options[0] ?? null
-  const opponents = Object.keys(data.baseline.byOpponent)
-    .filter((key) => data.otp.byOpponent[key])
-    .sort((a, b) => data.otp.byOpponent[b].games - data.otp.byOpponent[a].games)
+  const slotOption = (slot: OtpSlotData, id: number | null) => slot.options.find((option) => option.id === id) ?? null
+  const fieldShare = (slot: OtpSlotData) => slotOption(slot, slot.fieldTopId)?.share ?? 0
+  const otpWeightedShare = (slot: OtpSlotData) => slotOption(slot, slot.otpTopId)?.otpRate ?? 0
+  const bestScore = (slot: OtpSlotData) => slot.options[0]?.score ?? 0
 
   return (
     <section className="ot-card">
       <div className="ot-card-head">
         <h3>OTP of choice · {data.otp.riotId}</h3>
-        <div className="ot-head-right"><span className="ot-ci">patch {data.patch}</span></div>
+        <div className="ot-head-right">
+          {data.otp.byPatch.map((layer) => (
+            <span className="ot-ci" key={layer.patch} title={`${layer.games} of his games on patch ${layer.patch}, trust weight x${layer.weight}`}>
+              {layer.patch} ×{layer.weight}
+            </span>
+          ))}
+        </div>
       </div>
       <p className="ot-caveat">
-        {data.otp.games} of his Irelia games vs the field&apos;s {data.baseline.games} (his own excluded).
-        Win rate {pct0(data.otp.winRate)} vs {pct0(data.baseline.winRate)}. Where his item order agrees with
-        the field, the consensus pick&apos;s score is boosted.
+        {data.otp.games} of his Irelia games across {data.otp.byPatch.length} patches vs the field&apos;s{' '}
+        {data.baseline.games} (his own excluded). Win rate {pct0(data.otp.winRate)} vs {pct0(data.baseline.winRate)}.
+        Newer patches weigh more; where his pick matches the consensus, the third column marks it best in slot.
       </p>
 
       <div className="ot-subhead">General build path order</div>
       <div className="ot-item-list">
         {data.slots.map((slot) => {
-          const his = otpSlotPick(slot.slot)
-          const best = slot.options[0]
+          const bestOption = slot.options[0]
           return (
             <div className="ot-item-row" key={slot.slot}>
               <span className="ot-row-name">Slot {slot.slot}</span>
-              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-                {his ? <ItemIcon id={his.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
-                <span className="ot-row-games" title={`He takes ${itemName(his?.id ?? 0)} ${his ? pct0(his.share) : '—'} of the time`}>
-                  {his ? pct0(his.share) : '—'}
-                </span>
+              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} title={`Average: ${itemName(slot.fieldTopId ?? 0)} · ${pct0(fieldShare(slot))} of games`}>
+                {slot.fieldTopId ? <ItemIcon id={slot.fieldTopId} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+                <span className="ot-row-games">{slot.fieldTopId ? pct0(fieldShare(slot)) : '—'}</span>
               </span>
-              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-                <ItemIcon id={best.id} size={25} catalog={itemCatalog} version={ddragonVersion} />
-                <span className="ot-row-games" title={`${itemName(best.id)} · field share ${pct0(best.share)} · consensus score ${best.score.toFixed(3)}`}>
-                  {best.agreement ? '✓ consensus' : 'field pick'}
+              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} title={`OTP: ${itemName(slot.otpTopId ?? 0)} · ${pct0(otpWeightedShare(slot))} weighted`}>
+                {slot.otpTopId ? <ItemIcon id={slot.otpTopId} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+                <span className="ot-row-games">{slot.otpTopId ? pct0(otpWeightedShare(slot)) : '—'}</span>
+              </span>
+              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} title={`${itemName(bestOption?.id ?? 0)} · consensus score ${bestScore(slot).toFixed(3)}`}>
+                {bestOption ? <ItemIcon id={bestOption.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+                <span className={`ot-row-games${slot.matches ? ' ot-match-badge' : ''}`}>
+                  {slot.matches ? '✓ best in slot' : 'field pick'}
                 </span>
               </span>
             </div>
@@ -1067,31 +1094,30 @@ function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragon
       </div>
 
       <div className="ot-subhead">Head-to-head build order</div>
-      {opponents.length === 0 && <p className="ot-empty">No shared matchups with the field yet.</p>}
-      {opponents.slice(0, 12).map((key) => {
-        const id = Number(key)
-        const his = data.otp.byOpponent[key]
-        const field = data.baseline.byOpponent[key]
-        const hisFirst = his.slots?.[0]?.options[0] ?? null
-        const fieldFirst = field.slots?.[0]?.options[0] ?? null
-        return (
-          <div className="ot-item-row" key={key}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <ChampionIcon id={id} size={24} names={championNames} files={championFiles} version={ddragonVersion} />
-              <span className="ot-row-name">{championNames.get(id) ?? `#${id}`}</span>
-              <span className="ot-row-games">{his.games} vs {field.games} games</span>
+      {data.matchups.length === 0 && <p className="ot-empty">No shared matchups with the field yet.</p>}
+      {data.matchups.slice(0, 12).map((matchup) => (
+        <div className="ot-item-row" key={matchup.opponentChampionId}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <ChampionIcon id={matchup.opponentChampionId} size={24} names={championNames} files={championFiles} version={ddragonVersion} />
+            <span className="ot-row-name">{matchup.opponentName}</span>
+            <span className="ot-row-games">{matchup.otpGames} vs {matchup.fieldGames} games</span>
+          </span>
+          <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} title={`Average first item vs ${matchup.opponentName}: ${itemName(matchup.fieldFirstItemId ?? 0)}`}>
+            {matchup.fieldFirstItemId ? <ItemIcon id={matchup.fieldFirstItemId} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+            <span className="ot-row-games">avg</span>
+          </span>
+          <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} title={`His first item vs ${matchup.opponentName}: ${itemName(matchup.otpFirstItemId ?? 0)}`}>
+            {matchup.otpFirstItemId ? <ItemIcon id={matchup.otpFirstItemId} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+            <span className="ot-row-games">his</span>
+          </span>
+          <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} title={`Consensus best first item vs ${matchup.opponentName}: ${itemName(matchup.bestId ?? 0)}`}>
+            {matchup.bestId ? <ItemIcon id={matchup.bestId} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+            <span className={`ot-row-games${matchup.matches ? ' ot-match-badge' : ''}`}>
+              {matchup.matches ? '✓ best in slot' : 'field pick'}
             </span>
-            <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-              {hisFirst ? <ItemIcon id={hisFirst.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
-              <span className="ot-row-games" title={`His first item: ${itemName(hisFirst?.id ?? 0)}`}>his</span>
-            </span>
-            <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-              {fieldFirst ? <ItemIcon id={fieldFirst.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
-              <span className="ot-row-games" title={`Field first item: ${itemName(fieldFirst?.id ?? 0)}`}>field</span>
-            </span>
-          </div>
-        )
-      })}
+          </span>
+        </div>
+      ))}
 
       {data.previous && (
         <p className="ot-caveat">
