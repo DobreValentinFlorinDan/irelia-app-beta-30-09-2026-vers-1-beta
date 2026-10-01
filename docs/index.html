@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Irelia Fieldbook — evidence-based builds for Irelia one-tricks</title>
+<meta name="description" content="Irelia Fieldbook is a local research tool that analyses high-Elite Irelia one-tricks to produce statistically honest builds, runes and skill orders for League of Legends.">
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #12181f;
+    --line: #232c36;
+    --text: #e8e6e3;
+    --dim: #a09b8c;
+    --gold: #c8aa6e;
+    --gold-bright: #f0e6d2;
+    --green: #57b38a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 72px; }
+  header { display: flex; align-items: center; gap: 18px; margin-bottom: 28px; }
+  header img { width: 64px; height: 64px; border-radius: 12px; border: 1px solid var(--line); background: #1a232e; }
+  h1 { font-size: 1.9rem; letter-spacing: 0.2px; }
+  .tagline { color: var(--gold); font-size: 1.05rem; margin-top: 4px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 26px 28px;
+    margin: 22px 0;
+  }
+  h2 { font-size: 1.2rem; color: var(--gold-bright); margin-bottom: 12px; }
+  p { color: var(--dim); margin-bottom: 10px; }
+  p strong { color: var(--text); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 22px;
+  }
+  .card h3 { color: var(--gold); font-size: 1rem; margin-bottom: 8px; }
+  .card p { font-size: 0.92rem; margin: 0; }
+  ul { color: var(--dim); padding-left: 20px; margin-bottom: 10px; }
+  li { margin-bottom: 6px; }
+  .pill {
+    display: inline-block;
+    background: #1a2430;
+    border: 1px solid var(--line);
+    color: var(--gold);
+    border-radius: 999px;
+    font-size: 0.8rem;
+    padding: 3px 12px;
+    margin: 2px 4px 2px 0;
+  }
+  a { color: var(--gold); }
+  footer {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 0.8rem;
+    text-align: center;
+  }
+  .api-note { display: flex; align-items: center; gap: 14px; }
+  .api-note img { width: 44px; height: 44px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <img src="https://ddragon.leagueoflegends.com/cdn/16.19.1/img/champion/Irelia.png" alt="Irelia">
+    <div>
+      <h1>Irelia Fieldbook</h1>
+      <div class="tagline">Evidence-based builds for Irelia one-tricks</div>
+    </div>
+  </header>
+
+  <p>
+    Irelia Fieldbook is a <strong>local, single-user research tool</strong> for League of Legends players who
+    main Irelia. It turns raw match data into actionable, statistically honest guidance: what high-Elite
+    Irelia one-tricks actually build, and how those choices change per lane opponent and team composition.
+    Everything runs on the player's own machine — no accounts, no servers, no third parties.
+  </p>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Verified one-trick analysis</h3>
+      <p>Reads the KR/EUW/EUNE/NA ranked ladders and cross-references each account's top champion masteries
+      to find players who genuinely main Irelia, then analyses their recent ranked games and timelines.</p>
+    </div>
+    <div class="card">
+      <h3>Evidence-based builds</h3>
+      <p>Aggregates starting items, boots, core items, full purchase paths, runes, keystones, summoner spells
+      and skill orders — including per-matchup breakdowns against each lane opponent.</p>
+    </div>
+    <div class="card">
+      <h3>Draft assistant</h3>
+      <p>Optionally reads the player's own live champion select directly from the local League Client to
+      surface the right matchup data during draft — a local read, no API call involved.</p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>How the data is handled</h2>
+    <ul>
+      <li><strong>Statistical honesty.</strong> Every percentage carries a sample size and a Wilson
+      confidence interval, so small samples are never presented as reliable.</li>
+      <li><strong>Patch-scoped.</strong> Build evidence is restricted to the newest patch with data, so
+      stale-patch games never skew a recommendation.</li>
+      <li><strong>Rate-limit discipline.</strong> A local token-bucket queue paces every request below the
+      limits declared in the <code>X-App-Rate-Limit</code> response headers, and tolerates 429s by pausing
+      rather than retrying aggressively.</li>
+      <li><strong>Permanent caching.</strong> Every match and timeline is cached on disk and never re-fetched;
+      timeline payloads are trimmed to the fields the analysis reads.</li>
+      <li><strong>Local-only by design.</strong> The Riot API key is stored only in a local server process,
+      never exposed to client code, and no data ever leaves the player's computer.</li>
+    </ul>
+  </div>
+
+  <div class="panel api-note">
+    <img src="https://ddragon.leagueoflegends.com/cdn/16.19.1/img/item/3153.png" alt="Blade of the Ruined King">
+    <p style="margin:0">
+      Built with the <strong>Riot Games API</strong> and the Data Dragon CDN.
+      Irelia Fieldbook isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games
+      or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all
+      associated properties are trademarks or registered trademarks of Riot Games, Inc.
+    </p>
+  </div>
+
+  <p style="text-align:center">
+    <a href="privacy.html">Privacy policy</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/DobreValentinFlorinDan/irelia-app-beta-30-09-2026-vers-1-beta">Source code on GitHub</a>
+  </p>
+
+  <footer>
+    Free and non-commercial · Personal research tool · Not affiliated with Riot Games
+  </footer>
+
+</div>
+</body>
+</html>

@@ -2,6 +2,8 @@
 
 A personal, local-only research tool for playing Irelia in League of Legends. It runs as a Vite + React single-page app with a small local Node middleware plugin that talks to the Riot web API and, optionally, your live League Client.
 
+- **Product page & privacy policy:** `docs/index.html` and `docs/privacy.html` (published via GitHub Pages at the repository's Pages URL).
+
 ## What it does
 
 - **Your ranked baseline** — loads your last 20 ranked solo games (EUROPE routing) and reports your Irelia share, Irelia win rate, and recent matchups.

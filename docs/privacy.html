@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Irelia Fieldbook</title>
+<meta name="description" content="Privacy policy for Irelia Fieldbook, a local-only League of Legends research tool.">
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #12181f; --line: #232c36;
+    --text: #e8e6e3; --dim: #a09b8c; --gold: #c8aa6e; --gold-bright: #f0e6d2;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, -apple-system, sans-serif; line-height: 1.65; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px 72px; }
+  h1 { font-size: 1.6rem; color: var(--gold-bright); margin-bottom: 6px; }
+  .updated { color: var(--dim); font-size: 0.85rem; margin-bottom: 28px; }
+  h2 { font-size: 1.1rem; color: var(--gold); margin: 26px 0 10px; }
+  p, li { color: var(--dim); margin-bottom: 10px; }
+  ul { padding-left: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px 28px; margin: 22px 0; }
+  a { color: var(--gold); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Privacy Policy — Irelia Fieldbook</h1>
+  <div class="updated">Last updated: October 2026</div>
+
+  <div class="panel">
+    <p><strong>The short version:</strong> Irelia Fieldbook is a local-only application. It collects nothing.
+    No account, no telemetry, no analytics, no tracking, no data leaves your machine.</p>
+  </div>
+
+  <h2>1. What this application is</h2>
+  <p>Irelia Fieldbook is a personal, non-commercial research tool for League of Legends players who main the
+  champion Irelia. It runs entirely on your computer as a desktop application. There are no servers operated
+  by the developer, and the developer never receives any data from the application.</p>
+
+  <h2>2. Data the application processes</h2>
+  <ul>
+    <li><strong>Riot Games match data.</strong> The application requests public match, ladder and mastery data
+    from the official Riot Games API using your own API key. Responses are cached as local files on your disk
+    (a <code>cache</code> folder inside the application directory) so repeat analyses don't re-request the
+    same data.</li>
+    <li><strong>Your League Client (optional).</strong> With your consent in the app, it can read your live
+    champion select from the local League Client lockfile on your own machine. This is a local file read; no
+    API request is made and nothing is transmitted.</li>
+    <li><strong>Your Riot API key.</strong> Stored in a local <code>.env.local</code> file inside the
+    application directory. It is read only by the local server process, is never bundled into client code,
+    and is never sent anywhere other than the official Riot Games API.</li>
+  </ul>
+
+  <h2>3. Data we collect about you</h2>
+  <p>None. The application has no login, no account system, no telemetry, no analytics, no crash reporting and
+  no third-party SDKs. The developer has no way to see what the application does on your machine.</p>
+
+  <h2>4. Third parties</h2>
+  <ul>
+    <li><strong>Riot Games, Inc.</strong> — the official API (<code>api.riotgames.com</code>) and the public
+    Data Dragon CDN (<code>ddragon.leagueoflegends.com</code>) are contacted directly by the application using
+    your API key. See Riot Games' own <a href="https://www.riotgames.com/en/privacy-notice">Privacy Notice</a>.</li>
+    <li>No other third party is contacted, and no advertising or analytics networks are used.</li>
+  </ul>
+
+  <h2>5. Data retention and deletion</h2>
+  <p>All cached data lives in a <code>cache</code> folder inside the application directory. You can delete it
+  at any time — either through the application's Data management screen ("Start fresh") or by deleting the
+  folder. Deleting the folder removes every piece of data the application ever stored.</p>
+
+  <h2>6. Children</h2>
+  <p>The application does not collect personal information from anyone, including children under 13.</p>
+
+  <h2>7. Changes to this policy</h2>
+  <p>If this policy changes, the updated version will be published at this same URL with a new "last updated"
+  date.</p>
+
+  <h2>8. Contact</h2>
+  <p>Questions about this policy or the application:
+  <a href="https://github.com/DobreValentinFlorinDan/irelia-app-beta-30-09-2026-vers-1-beta">GitHub repository</a>.</p>
+
+</div>
+</body>
+</html>
