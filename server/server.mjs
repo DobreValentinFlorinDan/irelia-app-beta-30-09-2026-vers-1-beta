@@ -195,6 +195,17 @@ const server = createHttpServer((request, response) => {
   response.end('Build the client first: npm run build')
 })
 
+server.on('error', (error) => {
+  // A second app instance (or an orphaned server) holding the port is the one
+  // case worth a clear message: the caller otherwise sees a bare EADDRINUSE
+  // stack trace and it looks like a crash instead of "close the other window".
+  if (error && error.code === 'EADDRINUSE') {
+    console.error(`[irelia] port ${PORT} is already in use — close the other Irelia Fieldbook window and start again.`)
+    process.exit(1)
+  }
+  console.error('[irelia] server error:', error)
+})
+
 server.listen(PORT, HOST, () => {
   console.log(`[irelia] api+client listening on http://${HOST}:${PORT}`)
   console.log(`[irelia] riot key ${options.apiKey ? 'loaded' : 'MISSING (add RIOT_API_KEY to .env.local)'}`)
