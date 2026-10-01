@@ -1,3 +1,9 @@
 {
-  "recommendations": ["svelte.svelte-vscode"]
+  "recommendations": [
+    "oxc.oxc-vscode",
+    "dbaeumer.vscode-eslint",
+    "redhat.vscode-yaml",
+    "vitest.explorer"
+  ],
+  "unwantedRecommendations": []
 }

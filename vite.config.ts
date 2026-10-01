@@ -10,8 +10,13 @@ export default defineConfig(({ mode }) => {
       apiKey: environment.RIOT_API_KEY,
       lockfilePath: environment.LEAGUE_CLIENT_LOCKFILE,
     })],
+    // Relative assets so the packaged Electron build can load from file:// as
+    // well as the local HTTP server.
+    base: './',
     server: {
       host: '127.0.0.1',
+      port: 3000,
+      strictPort: true,
     },
   }
 })

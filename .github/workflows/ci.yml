@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, type-check, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint with oxlint
+        run: npm run lint
+
+      - name: Type-check frontend
+        run: npx tsc -p tsconfig.app.json --noEmit
+
+      - name: Type-check server
+        run: >
+          npx tsc --noEmit --ignoreConfig
+          --module nodenext --moduleResolution nodenext
+          --target es2023 --lib es2023 --types node
+          --strict --skipLibCheck --verbatimModuleSyntax
+          server/buildEngine.ts server/diskCache.ts server/riotApi.ts
+
+      - name: Build production bundle
+        run: npm run build

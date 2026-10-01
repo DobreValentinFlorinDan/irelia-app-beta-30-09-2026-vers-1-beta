@@ -27,3 +27,9 @@ cache
 *.njsproj
 *.sln
 *.sw?
+
+# Local test artifacts
+scan-test.txt
+vite-dev.log
+debug.log
+deepen-*.log

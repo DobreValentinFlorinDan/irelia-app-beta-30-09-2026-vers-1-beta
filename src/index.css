@@ -1,27 +1,27 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap');
 
 :root {
-  --bg: #0b0f14;
-  --bg-elev: #111823;
-  --bg-elev-2: #16202d;
-  --surface: #141d29;
-  --surface-2: #1a2634;
-  --line: #24313f;
-  --line-soft: #1c2836;
-  --text: #e8eef5;
-  --muted: #8b9bab;
-  --muted-2: #63768a;
-  --accent: #5cc8a8;
-  --accent-2: #37b6d6;
-  --accent-glow: rgba(92, 200, 168, 0.35);
+  --bg: #050505;
+  --bg-elev: #0c0c0c;
+  --bg-elev-2: #121212;
+  --surface: #111111;
+  --surface-2: #171717;
+  --line: #262626;
+  --line-soft: #1e1e1e;
+  --text: #f2f2f2;
+  --muted: #9a9a9a;
+  --muted-2: #777777;
+  --accent: #e53935;
+  --accent-2: #ff5252;
+  --accent-glow: rgba(229, 57, 53, 0.35);
   --top-color: #f0a84e;
   --mid-color: #7f95ff;
-  --win: #57d18a;
-  --loss: #ef6f6f;
+  --win: #3ecf6f;
+  --loss: #ff5f56;
   --warn: #e0b76e;
   --radius: 14px;
   --radius-sm: 9px;
-  --shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
   --font-body: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-display: 'Sora', 'Inter', system-ui, sans-serif;
 
@@ -51,9 +51,9 @@ body {
   color: var(--text);
   background-color: var(--bg);
   background-image:
-    radial-gradient(1100px 520px at 12% -8%, rgba(55, 182, 214, 0.14), transparent 60%),
-    radial-gradient(1000px 560px at 92% -12%, rgba(92, 200, 168, 0.16), transparent 58%),
-    radial-gradient(700px 500px at 50% 120%, rgba(127, 149, 255, 0.08), transparent 60%);
+    radial-gradient(1100px 520px at 12% -8%, rgba(229, 57, 53, 0.10), transparent 60%),
+    radial-gradient(1000px 560px at 92% -12%, rgba(255, 82, 82, 0.10), transparent 58%),
+    radial-gradient(700px 500px at 50% 120%, rgba(229, 57, 53, 0.05), transparent 60%);
   background-attachment: fixed;
 }
 
@@ -72,5 +72,5 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #26313f; border: 3px solid var(--bg); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: #33465b; }
+::-webkit-scrollbar-thumb { background: #2a2a2a; border: 3px solid var(--bg); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #3d3d3d; }

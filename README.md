@@ -14,11 +14,40 @@ Build frequencies and win rates shown are **observational**, not a guarantee of 
 ## Local setup
 1. Run `npm install`.
 2. Keep your Personal API key as `RIOT_API_KEY` in the root `.env.local`. It is read only by the local server; never expose it in the client.
-3. Run `npm run dev` and open `http://127.0.0.1:3000/`.
+3. Either run `npm run dev` and open `http://127.0.0.1:3000/`, or launch the desktop app (see below).
 
 Optional:
 
 - `LEAGUE_CLIENT_LOCKFILE` — set this only if your League Client is installed somewhere other than the default Riot Games path, so the live champion-select reader can find the lockfile.
+
+## Desktop app
+
+The app also runs as a real Electron window. The Riot API key stays in the main
+process and the local server; it is never exposed to the renderer, which only
+talks to `127.0.0.1`.
+
+```
+scripts\start-desktop.cmd      # builds if needed, launches the window
+```
+
+or by hand:
+
+```
+npm run build && npm run desktop
+```
+
+`npm run desktop:server` starts the Electron shell expecting an already-built
+`dist/`; `npm run server` starts only the local API + client server on
+`127.0.0.1:5273`.
+
+### ELECTRON_RUN_AS_NODE
+
+Always launch through `scripts\start-desktop.cmd`, or ensure
+`ELECTRON_RUN_AS_NODE` is unset in your shell. When that variable is set (the DSH
+harness and other Electron-based tooling export it globally) Electron runs as
+plain node instead of a GUI app and exits immediately with
+`Cannot read properties of undefined (reading 'whenReady')`. The launcher
+clears it; `electron/main.cjs` also clears it for the child server process.
 
 ## Scripts
 
@@ -26,10 +55,15 @@ Optional:
 - `npm run build`: build the production bundle.
 - `npm run preview`: preview a production build.
 - `npm run lint`: run oxlint.
+- `npm run server`: run the standalone local API + client server.
+- `npm run desktop`: build, then open the Electron desktop app.
+- `npm run desktop:server`: open the Electron app against an existing build.
 
 ## Notes
 
-- The Riot web API is rate-limited by a local queue (under 18 requests/second and 90 per two minutes per route). Riot key and endpoint limits may differ.
+- The Riot web API is rate-limited by a local queue. The configured key allows
+  100 requests per 2 minutes; `X-App-Rate-Limit` response headers are the
+  authority and the queue is tuned below the documented app-wide limit.
 - Live champion select is read directly from the local League Client lockfile; the Riot web API key is not used for it.
 - This is a private personal tool. Riot Games is not affiliated with it.
 

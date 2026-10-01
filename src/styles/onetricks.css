@@ -1,0 +1,868 @@
+/* ==========================================================================
+   onetricks-style layout
+   --------------------------------------------------------------------------
+   A dark statistics layout: two columns of bordered cards over a near-black
+   page, small rounded icon tiles with a percentage caption under each, and a
+   full-width Recent Games table. Namespaced `ot-` so it can coexist with the
+   legacy app.css while views are migrated.
+   ========================================================================== */
+
+.ot-page {
+  --ot-bg: #050505;
+  --ot-card: #121212;
+  --ot-card-raised: #1a1a1a;
+  --ot-line: #262626;
+  --ot-line-soft: #1e1e1e;
+  --ot-text: #f2f2f2;
+  --ot-dim: #9a9a9a;
+  --ot-dimmer: #777777;
+  --ot-accent: #e53935;
+  --ot-win: #3ecf6f;
+  --ot-loss: #ff5f56;
+  --ot-radius: 10px;
+  --ot-tile: 30px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--ot-text);
+  padding-bottom: 40px;
+}
+
+/* ------------------------------- filter bar ------------------------------ */
+
+.ot-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--ot-card);
+  border: 1px solid var(--ot-line);
+  border-radius: var(--ot-radius);
+  padding: 9px 12px;
+}
+
+.ot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--ot-line);
+  background: var(--ot-card);
+  color: var(--ot-text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.ot-chip:hover { border-color: #333333; }
+
+.ot-chip.is-active {
+  border-color: var(--ot-accent);
+  background: color-mix(in srgb, var(--ot-accent) 16%, var(--ot-card));
+  color: #ffd6d6;
+}
+
+.ot-chip small {
+  color: var(--ot-dim);
+  font-weight: 600;
+}
+
+.ot-all-chip {
+  gap: 6px;
+  padding: 4px 12px 4px 5px;
+}
+
+.ot-all-chip .ot-tile-icon { width: 20px; height: 20px; border-radius: 50%; border: 0; background: transparent; }
+
+.ot-select-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ot-dim);
+  border: 1px solid var(--ot-line);
+  border-radius: 999px;
+  padding: 2px 5px 2px 11px;
+  background: #0a0a0a;
+  white-space: nowrap;
+}
+
+.ot-select-pill select {
+  background: transparent;
+  border: 0;
+  color: var(--ot-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 5px 6px;
+  outline: none;
+}
+
+.ot-select-pill select option { background: var(--ot-card); }
+
+.ot-patch-pill {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ot-text);
+  border: 1px solid var(--ot-line);
+  border-radius: 999px;
+  padding: 7px 13px;
+  background: #0a0a0a;
+  white-space: nowrap;
+}
+
+.ot-filter-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ot-dim);
+}
+
+.ot-ban-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #0a0a0a;
+  border: 1px solid var(--ot-line);
+  font-size: 12px;
+  color: var(--ot-dim);
+  white-space: nowrap;
+}
+
+.ot-ban-badge strong { color: var(--ot-text); font-size: 13px; }
+
+.ot-client-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #0a0a0a;
+  border: 1px solid var(--ot-line);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ot-dimmer);
+  white-space: nowrap;
+}
+
+.ot-client-badge.is-on {
+  color: var(--ot-win);
+  border-color: color-mix(in srgb, var(--ot-win) 45%, var(--ot-line));
+}
+
+.ot-client-badge.is-on::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ot-win);
+}
+
+/* --------------------------------- header -------------------------------- */
+
+.ot-champ-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 14px 18px;
+  background: var(--ot-card);
+  border: 1px solid var(--ot-line);
+  border-radius: var(--ot-radius);
+}
+
+.ot-champ-portrait {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid var(--ot-line);
+  flex: none;
+  background: #0a0a0a;
+}
+
+.ot-champ-portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.ot-champ-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ot-champ-title h2 { margin: 0; font-size: 24px; letter-spacing: -0.01em; }
+.ot-champ-title p { margin: 0; font-size: 12px; color: var(--ot-dim); }
+
+.ot-pool-progress {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ot-dim);
+  flex-wrap: wrap;
+}
+
+.ot-tier-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--ot-line);
+}
+
+.ot-tier-badge.is-anecdotal { color: var(--ot-loss); border-color: color-mix(in srgb, var(--ot-loss) 50%, var(--ot-line)); }
+.ot-tier-badge.is-directional { color: #d29922; border-color: color-mix(in srgb, #d29922 50%, var(--ot-line)); }
+.ot-tier-badge.is-moderate { color: #cfd8dc; border-color: color-mix(in srgb, #cfd8dc 45%, var(--ot-line)); }
+.ot-tier-badge.is-solid { color: var(--ot-win); border-color: color-mix(in srgb, var(--ot-win) 50%, var(--ot-line)); }
+
+.ot-champ-metrics {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 26px;
+}
+
+.ot-metric { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.ot-metric strong { font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }
+.ot-metric span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ot-dimmer); }
+.ot-metric.is-win strong { color: var(--ot-win); }
+.ot-metric.is-loss strong { color: var(--ot-loss); }
+
+/* --------------------------------- columns ------------------------------- */
+
+.ot-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .ot-columns { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ot-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+/* ---------------------------------- card --------------------------------- */
+
+.ot-card {
+  background: var(--ot-card);
+  border: 1px solid var(--ot-line);
+  border-radius: var(--ot-radius);
+  padding: 15px 17px 17px;
+}
+
+.ot-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.ot-card-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.ot-card-head .ot-head-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.ot-subhead {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ot-dimmer);
+  margin: 14px 0 9px;
+}
+
+.ot-subhead:first-child { margin-top: 0; }
+
+/* ---------------------------------- tiles -------------------------------- */
+
+.ot-tiles { display: flex; flex-wrap: wrap; gap: 9px; }
+.ot-tiles.is-tight { gap: 6px; }
+
+.ot-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 44px; }
+
+.ot-tile-icon {
+  position: relative;
+  width: var(--ot-tile);
+  height: var(--ot-tile);
+  border-radius: 5px;
+  overflow: hidden;
+  background: #0a0a0a;
+  border: 1px solid #1c1c1c;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.ot-tile-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.ot-tile-caption {
+  font-size: 10px;
+  color: var(--ot-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ot-tile.is-big { --ot-tile: 38px; }
+.ot-tile.is-small { --ot-tile: 24px; }
+
+/* Order badge for build-path steps. */
+.ot-step { position: relative; }
+
+.ot-step-index {
+  position: absolute;
+  left: -2px;
+  bottom: 16px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #0a0a0a;
+  border: 1px solid var(--ot-line);
+  color: var(--ot-dim);
+  font-size: 9px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+}
+
+.ot-placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 10px;
+  color: var(--ot-dimmer);
+}
+
+/* ------------------------------- build path ------------------------------ */
+
+.ot-tabs {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: #0a0a0a;
+  border: 1px solid var(--ot-line);
+  border-radius: 999px;
+}
+
+.ot-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--ot-dim);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ot-tabs button:hover:not(.is-active) { color: var(--ot-text); }
+
+.ot-tabs button.is-active {
+  color: #fff;
+  background: linear-gradient(140deg, var(--ot-accent), #ff5252);
+  box-shadow: 0 2px 10px rgba(229, 57, 53, 0.3);
+}
+
+.ot-build-row { display: flex; align-items: flex-start; gap: 4px; flex-wrap: wrap; }
+.ot-build-arrow { color: var(--ot-dimmer); align-self: center; padding: 0 2px; font-size: 12px; }
+
+/* The tracked first purchase is ringed so the selection is visible in the row. */
+.ot-step.is-selected .ot-tile-icon {
+  border-color: var(--ot-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ot-accent) 55%, transparent);
+}
+
+.ot-filtered-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--ot-line-soft);
+  font-size: 11px;
+  color: var(--ot-dim);
+}
+
+.ot-filtered-note .ot-first-item {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--ot-line);
+  overflow: hidden;
+  display: inline-block;
+}
+
+.ot-filtered-note .ot-first-item img { width: 100%; height: 100%; display: block; }
+
+.ot-link-button {
+  border: 0;
+  background: none;
+  color: var(--ot-accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ------------------------------ item columns ----------------------------- */
+
+.ot-item-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+@media (max-width: 620px) {
+  .ot-item-columns { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ot-item-list { display: flex; flex-direction: column; gap: 8px; }
+
+.ot-item-row { display: flex; align-items: center; gap: 9px; min-width: 0; }
+
+.ot-item-row .ot-row-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ot-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ot-item-row .ot-row-pct {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ot-text);
+  flex: none;
+}
+
+.ot-item-row .ot-row-games {
+  font-size: 10px;
+  color: var(--ot-dimmer);
+  flex: none;
+  min-width: 30px;
+  text-align: right;
+}
+
+/* --------------------------------- runes --------------------------------- */
+
+.ot-rune-set-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+
+.ot-rune-set {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px 4px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--ot-line);
+  background: #0a0a0a;
+  font-size: 11px;
+  color: var(--ot-dim);
+  cursor: pointer;
+}
+
+.ot-rune-set.is-active { border-color: var(--ot-accent); color: var(--ot-text); }
+.ot-rune-set .ot-set-icon { width: 18px; height: 18px; border-radius: 50%; overflow: hidden; flex: none; }
+.ot-rune-set .ot-set-icon img { width: 100%; height: 100%; display: block; }
+.ot-rune-set em { font-style: normal; color: var(--ot-text); font-weight: 700; }
+
+.ot-rune-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(46px, 1fr));
+  gap: 7px;
+}
+
+.ot-rune-grid .ot-rune {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid transparent;
+  background: #0a0a0a;
+}
+
+.ot-rune-grid .ot-rune img { width: 100%; height: 100%; display: block; }
+.ot-rune-grid .ot-rune.is-keystone { border-color: var(--ot-accent); }
+.ot-rune-grid .ot-rune.is-muted { opacity: 0.28; }
+
+.ot-rune-trees { display: flex; gap: 22px; flex-wrap: wrap; }
+.ot-rune-tree { display: flex; flex-direction: column; gap: 9px; }
+.ot-rune-tree-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ot-dimmer);
+}
+
+/* -------------------------------- skills --------------------------------- */
+
+.ot-skill-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+@media (max-width: 620px) {
+  .ot-skill-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ot-summoners { display: flex; flex-direction: column; gap: 11px; }
+
+.ot-summoner-row { display: flex; align-items: center; gap: 8px; }
+.ot-summoner-pair { display: flex; gap: 3px; }
+.ot-summoner-pair .ot-tile-icon { width: 26px; height: 26px; border-radius: 50%; }
+.ot-summoner-row .ot-row-pct { font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.ot-skill-priority { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+
+.ot-skill-priority .ot-priority-chip {
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  background: var(--ot-card-raised);
+  border: 1px solid var(--ot-line);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ot-grid-wrap { overflow-x: auto; }
+
+table.ot-skill-grid {
+  border-collapse: separate;
+  border-spacing: 3px;
+  font-size: 11px;
+}
+
+table.ot-skill-grid th {
+  color: var(--ot-dimmer);
+  font-weight: 600;
+  font-size: 10px;
+  text-align: center;
+  padding: 0 2px;
+}
+
+table.ot-skill-grid th.ot-skill-letter {
+  text-align: right;
+  padding-right: 6px;
+  color: var(--ot-text);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+table.ot-skill-grid td {
+  width: 26px;
+  height: 24px;
+  text-align: center;
+  border-radius: 4px;
+  background: #0a0a0a;
+  border: 1px solid var(--ot-line-soft);
+  color: var(--ot-dimmer);
+  font-variant-numeric: tabular-nums;
+}
+
+table.ot-skill-grid td.is-filled {
+  background: color-mix(in srgb, var(--ot-accent) 22%, #0a0a0a);
+  border-color: color-mix(in srgb, var(--ot-accent) 45%, var(--ot-line));
+  color: var(--ot-text);
+  font-weight: 700;
+}
+
+table.ot-skill-grid td.is-modal {
+  background: var(--ot-accent);
+  border-color: var(--ot-accent);
+  color: #1a0000;
+  font-weight: 800;
+}
+
+.ot-skill-pct { font-size: 11px; color: var(--ot-dim); text-align: center; }
+
+/* ----------------------------- recent games ------------------------------ */
+
+.ot-games-card { padding: 0; overflow: hidden; }
+
+.ot-games-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 17px;
+  border-bottom: 1px solid var(--ot-line);
+  flex-wrap: wrap;
+}
+
+.ot-games-head h3 { margin: 0; font-size: 15px; }
+
+.ot-games-filters { display: flex; align-items: center; gap: 8px; margin-left: 12px; }
+.ot-games-filters label { font-size: 11px; color: var(--ot-dim); display: flex; align-items: center; gap: 5px; }
+
+.ot-games-filters select {
+  background: #0a0a0a;
+  border: 1px solid var(--ot-line);
+  color: var(--ot-text);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.ot-games-meta { margin-left: auto; font-size: 11px; color: var(--ot-dim); display: flex; gap: 14px; }
+
+.ot-game-list { display: flex; flex-direction: column; }
+
+.ot-game {
+  display: grid;
+  grid-template-columns: 4px 92px minmax(150px, 1.3fr) 96px 70px 100px minmax(180px, 1.6fr);
+  align-items: center;
+  gap: 14px;
+  padding: 11px 17px 11px 0;
+  border-bottom: 1px solid var(--ot-line-soft);
+  font-size: 12px;
+}
+
+.ot-game:last-child { border-bottom: 0; }
+
+.ot-game-edge { align-self: stretch; border-radius: 0 3px 3px 0; }
+.ot-game.is-win .ot-game-edge { background: var(--ot-win); }
+.ot-game.is-loss .ot-game-edge { background: var(--ot-loss); }
+.ot-game.is-win { background: color-mix(in srgb, var(--ot-win) 6%, transparent); }
+.ot-game.is-loss { background: color-mix(in srgb, var(--ot-loss) 6%, transparent); }
+
+.ot-game-result { font-weight: 700; font-size: 12px; }
+.ot-game.is-win .ot-game-result { color: var(--ot-win); }
+.ot-game.is-loss .ot-game-result { color: var(--ot-loss); }
+.ot-game-duration { font-size: 11px; color: var(--ot-dimmer); }
+
+.ot-game-player { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ot-game-player strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ot-game-player span { font-size: 10px; color: var(--ot-dimmer); }
+
+.ot-game-kda { font-variant-numeric: tabular-nums; font-weight: 700; }
+.ot-game-kda small { display: block; font-weight: 500; color: var(--ot-dimmer); font-size: 10px; }
+
+.ot-game-stat { display: flex; flex-direction: column; gap: 1px; font-variant-numeric: tabular-nums; }
+.ot-game-stat strong { font-size: 12px; }
+.ot-game-stat span { font-size: 10px; color: var(--ot-dimmer); }
+
+.ot-game-versus { display: flex; align-items: center; gap: 6px; }
+.ot-game-versus em { font-style: normal; font-size: 9px; color: var(--ot-dimmer); }
+
+.ot-game-items { display: flex; gap: 3px; flex-wrap: nowrap; overflow: hidden; }
+.ot-game-items .ot-tile-icon { width: 25px; height: 25px; border-radius: 4px; }
+
+.ot-empty { color: var(--ot-dimmer); font-size: 12px; padding: 6px 0; }
+
+/* ------------------------------- confidence ------------------------------ */
+
+.ot-ci {
+  font-size: 10px;
+  color: var(--ot-dimmer);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ot-caveat {
+  margin: 12px 0 0;
+  padding-top: 11px;
+  border-top: 1px solid var(--ot-line-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ot-dimmer);
+}
+
+/* ------------------------------ priority roster -------------------------- */
+
+table.roster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+table.roster-table th {
+  text-align: left;
+  padding: 0 12px 8px 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ot-dimmer);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--ot-line);
+}
+
+table.roster-table td {
+  padding: 7px 12px 7px 0;
+  color: var(--ot-text);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--ot-line-soft);
+}
+
+table.roster-table tbody tr:hover td { background: var(--ot-card-raised); }
+table.roster-table tbody tr:last-child td { border-bottom: 0; }
+
+.roster-player { font-weight: 600; }
+.roster-player span { color: var(--ot-dimmer); font-weight: 400; }
+
+/* Icon fallback: the id chip only appears when the portrait fails to load. */
+.ot-tile-icon .ot-icon-fallback { display: none; }
+.ot-tile-icon.is-missing-icon .ot-icon-fallback { display: grid; }
+
+/* Roster controls: scan trigger, add form, per-row remove. */
+.ot-scan-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 16px;
+  background: linear-gradient(140deg, var(--ot-accent), #ff5252);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.08s ease;
+}
+
+.ot-scan-button:hover:not(:disabled) { filter: brightness(1.1); }
+.ot-scan-button:active:not(:disabled) { transform: translateY(1px); }
+.ot-scan-button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.ot-roster-note {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ot-dimmer);
+}
+
+.ot-roster-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ot-roster-add input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--ot-line);
+  border-radius: 8px;
+  background: #0a0a0a;
+  color: var(--ot-text);
+  font-size: 12px;
+}
+
+.ot-roster-add input::placeholder { color: var(--ot-dimmer); }
+.ot-roster-add input:focus { outline: none; border-color: var(--ot-accent); }
+
+.ot-roster-error {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--ot-loss);
+}
+
+.ot-roster-remove {
+  border: 1px solid var(--ot-line);
+  border-radius: 6px;
+  padding: 4px 9px;
+  background: transparent;
+  color: var(--ot-dimmer);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.ot-roster-remove:hover:not(:disabled) { color: var(--ot-loss); border-color: var(--ot-loss); }
+.ot-roster-remove:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Slot-by-slot build order: one row per finished slot, options with shares. */
+.ot-slots { display: flex; flex-direction: column; gap: 8px; }
+
+.ot-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 11px;
+  border: 1px solid var(--ot-line-soft);
+  border-radius: 8px;
+  background: #0a0a0a;
+}
+
+.ot-slot-label {
+  flex: 0 0 46px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ot-dimmer);
+}
+
+.ot-slot-options { display: flex; flex-wrap: wrap; gap: 16px; }
+
+.ot-slot-option { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+
+.ot-slot-share {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ot-dim);
+}
+
+/* Best-in-slot highlight: a red ring and a small win-rate badge. */
+.ot-slot-option.is-best .ot-tile-icon {
+  outline: 2px solid var(--ot-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px rgba(229, 57, 53, 0.14);
+}
+
+.ot-best-badge {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #fff;
+  background: linear-gradient(140deg, var(--ot-accent), #ff5252);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* Lane-opponent pill in the one-trick game list. */
+.ot-lane-vs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--ot-line);
+  border-radius: 999px;
+  background: #0a0a0a;
+  white-space: nowrap;
+}
+
+.ot-lane-vs small {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ot-dimmer);
+}
+
+.ot-lane-vs strong { font-size: 11px; color: var(--ot-text); }

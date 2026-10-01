@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a defect in Irelia Fieldbook
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include enough detail to reproduce it.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Dock view
+        - Dashboard view
+        - OTP scouting / scan
+        - Recommended build
+        - Draft view
+        - Widget view
+        - Local dev server / API
+        - Data cache
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and the observed behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the app at http://127.0.0.1:3000/
+        2. Click 'Scan regions'
+        3. See error
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      placeholder: "node --version, e.g. v22.11.0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant console or dev-server output
+      render: shell
+    validations:
+      required: false

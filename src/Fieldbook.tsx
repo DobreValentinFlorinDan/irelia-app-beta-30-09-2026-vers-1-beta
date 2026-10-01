@@ -1,24 +1,33 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Component, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import './App.css'
+import OnetricksView, { OnetrickGamesView, MATCHUP_TARGET, POOL_TARGET } from './Onetricks.tsx'
+import type { ConfidenceInterval, GameRow, ClientStatus } from './Onetricks.tsx'
 
-type Routing = 'EUROPE' | 'ASIA' | 'KR' | 'EUN1'
+type Routing = 'EUROPE' | 'ASIA' | 'KR' | 'EUN1' | 'AMERICAS' | 'EUW1' | 'NA1'
+type ScanRegion = 'KR' | 'EUW' | 'EUNE' | 'NA'
 type ApiUsage = {
   localBudget: { perSecond: number; perTwoMinutes: number }
+  app: { lastSecond: number; lastTwoMinutes: number }
   routes: Record<Routing, { lastSecond: number; lastTwoMinutes: number }>
   measuredAt: number
 }
 type ApiStatus = { configured: boolean; mode: string; usage: ApiUsage }
 const emptyApiUsage: ApiUsage = {
   localBudget: { perSecond: 18, perTwoMinutes: 90 },
+  app: { lastSecond: 0, lastTwoMinutes: 0 },
   routes: {
     EUROPE: { lastSecond: 0, lastTwoMinutes: 0 },
     ASIA: { lastSecond: 0, lastTwoMinutes: 0 },
     KR: { lastSecond: 0, lastTwoMinutes: 0 },
     EUN1: { lastSecond: 0, lastTwoMinutes: 0 },
+    AMERICAS: { lastSecond: 0, lastTwoMinutes: 0 },
+    EUW1: { lastSecond: 0, lastTwoMinutes: 0 },
+    NA1: { lastSecond: 0, lastTwoMinutes: 0 },
   },
   measuredAt: 0,
 }
-type Champion = { id: number; name: string }
+type Champion = { id: number; name: string; ddragonId?: string }
 type NamedId = { id: number; name: string; icon?: string; tree?: string; isTree?: boolean }
 type ItemInfo = {
   id: number
@@ -30,9 +39,9 @@ type ItemInfo = {
 }
 type StaticCatalog = { version: string; champions: Champion[]; items: ItemInfo[]; runes: NamedId[] }
 type DraftMode = 'mock' | 'live'
-type ViewName = 'dock' | 'dashboard' | 'otps' | 'build' | 'draft' | 'widget'
+type ViewName = 'onetricks' | 'dock' | 'dashboard' | 'otps' | 'build' | 'draft' | 'champselect' | 'datamanagement' | 'widget'
 type OtpLane = 'TOP' | 'MID'
-type Tier = 'all' | 'challenger' | 'grandmaster' | 'master'
+type Tier = 'all' | 'challenger' | 'grandmaster' | 'master' | 'emerald'
 const emptyChampions: Champion[] = []
 const emptyItems: ItemInfo[] = []
 const emptyRunes: NamedId[] = []
@@ -76,6 +85,80 @@ type MatchSample = {
   deaths: number
   assists: number
 }
+
+/**
+ * Normalises a match into the client's `MatchSample` shape, regardless of which
+ * wire shape arrived.
+ *
+ * The server historically emitted the raw `MatchBuildData` shape (`finalItems`,
+ * `lanePurchases`, `primaryStyle`, `secondaryStyle`, `spells`, `allyChampionIds`,
+ * `enemyChampionIds`) while the client reads `items`, `laneItems`,
+ * `primaryRuneStyle`, `secondaryRuneStyle`, `spellIds`, `allies`, `enemies`.
+ * That contract mismatch threw `match.items.map is not a function` and blanked
+ * the OTP scouting view. This single mapper accepts both shapes and resolves
+ * champion ids to names through the catalog the client already holds, so no
+ * network round-trip is needed and a missing field degrades to an empty value
+ * rather than a crash.
+ */
+function normalizeMatchSample(raw: Record<string, unknown>, championNames: Map<number, string>): MatchSample {
+  const championId = Number(raw.championId ?? 0)
+  const opponentChampionId = raw.opponentChampionId != null ? Number(raw.opponentChampionId) : null
+  const toName = (id: number) => championNames.get(id) ?? String(id)
+
+  const allyIds = Array.isArray(raw.allyChampionIds) ? raw.allyChampionIds as number[] : []
+  const enemyIds = Array.isArray(raw.enemyChampionIds) ? raw.enemyChampionIds as number[] : []
+  const laneEvents = Array.isArray(raw.laneItems) ? raw.laneItems : (Array.isArray(raw.lanePurchases) ? raw.lanePurchases : [])
+
+  return {
+    matchId: String(raw.matchId ?? ''),
+    patch: String(raw.patch ?? ''),
+    champion: String(raw.champion ?? toName(championId)),
+    championId,
+    opponent: opponentChampionId != null ? String(raw.opponent ?? toName(opponentChampionId)) : null,
+    opponentChampionId,
+    position: String(raw.position ?? 'UNKNOWN'),
+    allies: Array.isArray(raw.allies)
+      ? raw.allies as NamedId[]
+      : allyIds.map((id) => ({ id: Number(id), name: toName(Number(id)) })),
+    enemies: Array.isArray(raw.enemies)
+      ? raw.enemies as NamedId[]
+      : enemyIds.map((id) => ({ id: Number(id), name: toName(Number(id)) })),
+    win: Boolean(raw.win),
+    items: Array.isArray(raw.items) ? raw.items as number[] : (Array.isArray(raw.finalItems) ? raw.finalItems as number[] : []),
+    primaryRuneStyle: (raw.primaryRuneStyle ?? raw.primaryStyle ?? null) as number | null,
+    keystoneId: (raw.keystoneId ?? null) as number | null,
+    secondaryRuneStyle: (raw.secondaryRuneStyle ?? raw.secondaryStyle ?? null) as number | null,
+    runeIds: Array.isArray(raw.runeIds) ? raw.runeIds as number[] : [],
+    spellIds: Array.isArray(raw.spellIds) ? raw.spellIds as number[] : (Array.isArray(raw.spells) ? raw.spells as number[] : []),
+    laneItems: (laneEvents as Array<{ id: number; minute: number }>).map((event) => ({
+      id: Number(event.id),
+      minute: Number(event.minute ?? 0),
+    })),
+    kills: Number(raw.kills ?? 0),
+    deaths: Number(raw.deaths ?? 0),
+    assists: Number(raw.assists ?? 0),
+  }
+}
+
+/** A view that fails to render degrades to a message instead of a blank page. */
+class ViewErrorBoundary extends Component<{ label: string; children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="error-strip" role="alert">
+          {this.props.label} failed to render: {this.state.error.message}
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 type PlayerReport = {
   account: { gameName: string; tagLine: string }
   rankedSample: number
@@ -94,9 +177,11 @@ type OtpRoleStats = {
 }
 type OtpCandidate = {
   name: string
+  region?: ScanRegion
   tier: string
   leaguePoints: number
   ireliaMasteryPoints: number
+  ireliaMasteryRank?: number
   rankedSample: number
   ireliaGames: number
   ireliaShare: number
@@ -120,11 +205,16 @@ type OtpCandidate = {
 type OtpScan = {
   tier: string
   lane: OtpLane | null
+  regions?: ScanRegion[]
+  minIreliaGames?: number
   threshold: number
   candidatePoolSize: number
   masteryCandidates: number
   screenSize: number
   deepenedCandidates: number
+  cacheHits?: number
+  /** Matches downloaded that were not already cached; 0 means nothing new. */
+  newGames?: number
   analyzed: OtpCandidate[]
   note: string
 }
@@ -148,6 +238,19 @@ type BuildEvidence = {
   keystones: Array<{ id: number; count: number }>
 }
 
+/** Human-readable byte size for the storage cap readouts. */
+function formatBytesLocal(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
 async function apiGet<T>(url: string): Promise<T> {
   const response = await fetch(url)
   const data = (await response.json()) as { error?: string }
@@ -166,18 +269,28 @@ async function apiGet<T>(url: string): Promise<T> {
 async function streamKoreanScan({
   tier,
   lane,
+  regions,
+  rosterOnly = false,
   onProgress,
+  signal,
 }: {
   tier: Tier
   lane: OtpLane | null
+  regions: ScanRegion[]
+  /** Deepen only the tracked one-tricks and skip the ladder crawl. */
+  rosterOnly?: boolean
   onProgress: (progress: ScanProgress) => void
+  signal?: AbortSignal
 }): Promise<OtpScan> {
   const query = new URLSearchParams({
     tier,
-    limit: tier === 'all' ? '9' : '8',
-    sampleSize: '15',
+    limit: tier === 'all' ? '20' : '12',
+    sampleSize: '40',
     threshold: '0.7',
+    regions: regions.join(','),
+    minGames: '3',
     ...(lane ? { lane } : {}),
+    ...(rosterOnly ? { source: 'roster' } : {}),
   })
 
   if (typeof EventSource === 'undefined') {
@@ -192,6 +305,11 @@ async function streamKoreanScan({
       settled = true
       source.close()
       fn()
+    }
+    const abort = () => finish(() => reject(new Error('Scan stopped.')))
+    if (signal) {
+      if (signal.aborted) { abort(); return }
+      signal.addEventListener('abort', abort, { once: true })
     }
     source.onmessage = (event) => {
       try {
@@ -249,100 +367,6 @@ function sortOtpCandidates(candidates: OtpCandidate[], mode: OtpSortMode) {
   })
 }
 
-function aggregateBuild(matches: MatchSample[], useLanePurchases: boolean): BuildEvidence {
-  const itemCounts = new Map<number, { count: number; wins: number }>()
-  const runeCounts = new Map<number, { count: number; wins: number }>()
-  const primaryStyleCounts = new Map<number, number>()
-  const secondaryStyleCounts = new Map<number, number>()
-  const spellCounts = new Map<number, number>()
-  const keystoneCounts = new Map<number, number>()
-  const purchaseGroups = new Map<number, { matches: Set<string>; totalMinute: number }>()
-  const itemMatches = useLanePurchases ? matches.filter((match) => match.laneItems.length) : matches
-  let wins = 0
-
-  matches.forEach((match) => {
-    const earliestPurchase = new Map<number, number>()
-    match.laneItems.forEach(({ id, minute }) => {
-      const current = earliestPurchase.get(id)
-      if (current === undefined || minute < current) earliestPurchase.set(id, minute)
-    })
-    earliestPurchase.forEach((minute, id) => {
-      const group = purchaseGroups.get(id) ?? { matches: new Set<string>(), totalMinute: 0 }
-      if (!group.matches.has(match.matchId)) {
-        group.matches.add(match.matchId)
-        group.totalMinute += minute
-      }
-      purchaseGroups.set(id, group)
-    })
-    new Set(match.runeIds).forEach((id) => {
-      const current = runeCounts.get(id) ?? { count: 0, wins: 0 }
-      current.count += 1
-      if (match.win) current.wins += 1
-      runeCounts.set(id, current)
-    })
-    if (match.primaryRuneStyle) {
-      primaryStyleCounts.set(match.primaryRuneStyle, (primaryStyleCounts.get(match.primaryRuneStyle) ?? 0) + 1)
-    }
-    if (match.secondaryRuneStyle) {
-      secondaryStyleCounts.set(match.secondaryRuneStyle, (secondaryStyleCounts.get(match.secondaryRuneStyle) ?? 0) + 1)
-    }
-    if (match.keystoneId) {
-      keystoneCounts.set(match.keystoneId, (keystoneCounts.get(match.keystoneId) ?? 0) + 1)
-    }
-    ;(match.spellIds ?? []).forEach((id) => {
-      spellCounts.set(id, (spellCounts.get(id) ?? 0) + 1)
-    })
-  })
-
-  itemMatches.forEach((match) => {
-    if (match.win) wins += 1
-    const ids = useLanePurchases ? match.laneItems.map((item) => item.id) : match.items
-    new Set(ids).forEach((id) => {
-      const current = itemCounts.get(id) ?? { count: 0, wins: 0 }
-      current.count += 1
-      if (match.win) current.wins += 1
-      itemCounts.set(id, current)
-    })
-  })
-
-  return {
-    sample: matches.length,
-    itemSample: itemMatches.length,
-    winRate: itemMatches.length ? wins / itemMatches.length : 0,
-    items: [...itemCounts.entries()]
-      .map(([id, value]) => ({ id, count: value.count, winRate: value.count ? value.wins / value.count : 0 }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8),
-    runes: [...runeCounts.entries()]
-      .map(([id, value]) => ({ id, count: value.count, winRate: value.wins / value.count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 6),
-    primaryStyles: [...primaryStyleCounts.entries()]
-      .map(([id, count]) => ({ id, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 2),
-    secondaryStyles: [...secondaryStyleCounts.entries()]
-      .map(([id, count]) => ({ id, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 2),
-    purchasePath: [...purchaseGroups.entries()]
-      .map(([id, value]) => ({
-        id,
-        games: value.matches.size,
-        averageMinute: value.matches.size ? value.totalMinute / value.matches.size : 0,
-      }))
-      .sort((a, b) => a.averageMinute - b.averageMinute || b.games - a.games),
-    spells: [...spellCounts.entries()]
-      .map(([id, count]) => ({ id, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 4),
-    keystones: [...keystoneCounts.entries()]
-      .map(([id, count]) => ({ id, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 4),
-  }
-}
-
 /* ======================= Server build profile types ======================= */
 
 type ServerItemShare = { id: number; games: number; winRate: number; averageMinute: number | null }
@@ -366,6 +390,42 @@ type BuildProfile = {
   keystones: ServerRuneShare[]
   runeShards: ServerRuneShare[]
 }
+/** Wilson score interval returned by the server for every proportion. */
+type ConfidenceInterval = {
+  estimate: number
+  low: number
+  high: number
+  sampleSize: number
+  effectiveSampleSize: number
+  confidence: number
+}
+
+/** A complete finished build, optimised as a whole rather than as loose items. */
+type ItemSetEntry = {
+  items: number[]
+  games: number
+  wins: number
+  winRate: ConfidenceInterval
+  averageDuration: number | null
+}
+
+type SkillLevelRow = {
+  level: number
+  slot: number
+  share: ConfidenceInterval
+  counts: Record<number, number>
+}
+
+type SkillOrderAnalysis = {
+  rows: SkillLevelRow[]
+  orders: Array<{ order: string; games: number }>
+  priority: number[]
+  earlyOrder: string
+  maxLevel: number
+  sampleSize: number
+  confidence: number
+}
+
 type BuildResponse = {
   source: 'lane' | 'comp'
   lane: OtpLane
@@ -374,6 +434,18 @@ type BuildResponse = {
   games: number
   profile: BuildProfile
   reason: string
+  /** Whole-build optimisation over completed inventories. */
+  itemSets?: ItemSetEntry[]
+  /** Per-level skill matrix, max order and early order. */
+  skills?: SkillOrderAnalysis
+  /** Context-weighted win rate, which differs from `profile.winRate` when a draft is supplied. */
+  weighted?: ConfidenceInterval
+  /** How concentrated the context weighting was. */
+  weighting?: {
+    totalWeight: number
+    effectiveSampleSize: number
+    topMatchId: string | null
+  }
 }
 type ScanProgress = { phase: string; message: string; done: number; total: number }
 
@@ -395,7 +467,33 @@ const emptyBuildProfile: BuildProfile = {
   runeShards: [],
 }
 
-/* ======================= Professor-style build path ======================= */
+/**
+ * Converts a server build profile (the lane/matchup build from `/api/riot/build`)
+ * into the widget's `BuildEvidence` shape so the widget can show "item order vs
+ * lane opponent" using the same weighted server model as the stats page.
+ */
+function buildResponseToEvidence(build: BuildResponse | null): BuildEvidence {
+  const empty: BuildEvidence = {
+    sample: 0, itemSample: 0, winRate: 0, items: [], runes: [],
+    primaryStyles: [], secondaryStyles: [], purchasePath: [], spells: [], keystones: [],
+  }
+  if (!build) return empty
+  const profile = build.profile
+  return {
+    sample: profile.games,
+    itemSample: profile.games,
+    winRate: profile.winRate,
+    items: profile.fullItems.map((item) => ({ id: item.id, count: item.games, winRate: item.winRate })),
+    runes: profile.runeShards.map((rune) => ({ id: rune.id, count: rune.games, winRate: profile.winRate })),
+    primaryStyles: profile.primaryStyles.map((style) => ({ id: style.id, count: style.games })),
+    secondaryStyles: profile.secondaryStyles.map((style) => ({ id: style.id, count: style.games })),
+    purchasePath: profile.purchasePath.map((item) => ({ id: item.id, games: item.games, averageMinute: item.averageMinute ?? 0 })),
+    spells: profile.spells.map((spell) => ({ id: spell.ids[0], count: spell.games })),
+    keystones: profile.keystones.map((keystone) => ({ id: keystone.id, count: keystone.games })),
+  }
+}
+
+/* ======================= Porofessor-style build path ======================= */
 
 function BuildPathCard({
   title,
@@ -420,153 +518,187 @@ function BuildPathCard({
   function itemIcon(id: number, size: number) {
     const item = itemCatalog.get(id)
     return item && patch ? (
-      <img src={`https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${item.image}`} alt={item.name} title={item.name} width={size} height={size} loading="lazy" />
-    ) : <span className="item-icon-placeholder" style={{ width: size, height: size }}>{id}</span>
+      <img
+        className="bp-item-img"
+        src={`https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${item.image}`}
+        alt={item.name}
+        title={item.name}
+        width={size}
+        height={size}
+        loading="lazy"
+      />
+    ) : <span className="bp-item-img item-icon-placeholder" style={{ width: size, height: size }}>{id}</span>
   }
+
+  function ItemTile({
+    id,
+    size,
+    badge,
+    caption,
+  }: {
+    id: number
+    size: number
+    badge?: string
+    caption?: string
+  }) {
+    return (
+      <div className="bp-tile" title={itemCatalog.get(id)?.name ?? `Item ${id}`}>
+        <div className="bp-tile-icon">
+          {itemIcon(id, size)}
+          {badge && <span className="bp-wr">{badge}</span>}
+        </div>
+        {caption && <span className="bp-tile-caption">{caption}</span>}
+      </div>
+    )
+  }
+
+  const hasCore = profile.purchasePath.length > 0 || profile.coreItems.length > 0
+  const coreTiles = profile.purchasePath.length
+    ? profile.purchasePath.slice(0, 6).map((item) => ({
+      id: item.id,
+      badge: percent(item.winRate),
+      caption: item.averageMinute !== null ? `~${Math.round(item.averageMinute)}m` : `${item.games}×`,
+    }))
+    : profile.coreItems.slice(0, 6).map((item) => ({
+      id: item.id,
+      badge: percent(item.winRate),
+      caption: `${item.games}×`,
+    }))
 
   return (
     <section className="panel build-path-card">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">KR Irelia OTPs only</p>
+      <div className="bp-header">
+        <div className="bp-header-copy">
+          <p className="eyebrow">KR + EUW + EUNE + NA · active Irelia games</p>
           <h2>{title}</h2>
           <p className="microcopy">{subtitle}</p>
         </div>
-        <div className="build-path-meta">
-          <strong>{profile.games}</strong>
-          <span>games</span>
-          {profile.games > 0 && <span className="build-path-wr">{percent(profile.winRate)} WR</span>}
+        <div className="bp-header-stats">
+          <div className="bp-stat"><strong>{profile.games}</strong><span>games</span></div>
+          {profile.games > 0 && <div className="bp-stat bp-stat-wr"><strong>{percent(profile.winRate)}</strong><span>win rate</span></div>}
+          {patch && <span className={`bp-patch-badge ${exact ? 'is-current' : 'is-older'}`}>patch {patch}</span>}
         </div>
       </div>
 
       {!response || profile.games === 0 ? (
-        <p className="empty-state">{response?.reason ?? 'Run a KR scan, then pick a matchup to see the build path.'}</p>
+        <p className="empty-state">{response?.reason ?? 'Run a scan, then pick a matchup to see the build path.'}</p>
       ) : (
         <>
-          {!exact && <p className="caveat">Showing the most recent patch with data (not the current patch). Sample sizes are shown per item.</p>}
+          {!exact && <p className="caveat">Showing the most recent patch with data, not the live patch. Sample sizes appear under each item.</p>}
 
-          <div className="build-path-block">
-            <h3 className="build-section-title">Start</h3>
-            <div className="build-path-row">
-              {profile.startingItems.length
-                ? profile.startingItems.map((item) => (
-                  <div className="build-path-step" key={item.id}>
-                    {itemIcon(item.id, 44)}
-                    <span>{itemCatalog.get(item.id)?.name ?? `Item ${item.id}`}</span>
-                    <small>{item.games}×</small>
-                  </div>
-                ))
-                : <span className="empty-state">No starting-item sample.</span>}
-            </div>
-          </div>
+          <div className="bp-cols">
+            <div className="bp-col bp-col-runes">
+              <h3 className="bp-section-title">Runes</h3>
+              <div className="bp-runes">
+                <div className="bp-rune-trees">
+                  {profile.primaryStyles.length > 0 && (
+                    <div className="bp-tree bp-tree-primary">
+                      <span className="bp-tree-label">Primary</span>
+                      <strong>{runeNames.get(profile.primaryStyles[0].id) ?? `Tree ${profile.primaryStyles[0].id}`}</strong>
+                      <small>{profile.primaryStyles[0].games}×</small>
+                    </div>
+                  )}
+                  {profile.secondaryStyles.length > 0 && (
+                    <div className="bp-tree bp-tree-secondary">
+                      <span className="bp-tree-label">Secondary</span>
+                      <strong>{runeNames.get(profile.secondaryStyles[0].id) ?? `Tree ${profile.secondaryStyles[0].id}`}</strong>
+                      <small>{profile.secondaryStyles[0].games}×</small>
+                    </div>
+                  )}
+                </div>
+                <div className="bp-keystones">
+                  {profile.keystones.slice(0, 3).map((keystone) => {
+                    const rune = runeCatalog.get(keystone.id)
+                    return (
+                      <span className="bp-keystone" key={keystone.id} title={rune?.name ?? `Rune ${keystone.id}`}>
+                        {rune?.icon
+                          ? <img src={`https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}`} alt={rune.name} width="34" height="34" loading="lazy" />
+                          : <span className="item-icon-placeholder" style={{ width: 34, height: 34 }}>{keystone.id}</span>}
+                        <span>{rune?.name ?? `Rune ${keystone.id}`}</span>
+                        <em>{keystone.games}×</em>
+                      </span>
+                    )
+                  })}
+                </div>
+              </div>
 
-          <div className="build-path-block">
-            <h3 className="build-section-title">Build order</h3>
-            <div className="build-path-row core">
-              {profile.purchasePath.length
-                ? profile.purchasePath.slice(0, 6).map((item, index) => (
-                  <div className="build-path-step" key={item.id}>
-                    <span className="order-badge">{index + 1}</span>
-                    {itemIcon(item.id, 52)}
-                    <span>{itemCatalog.get(item.id)?.name ?? `Item ${item.id}`}</span>
-                    <small>{percent(item.winRate)}{item.averageMinute !== null ? ` · ~${Math.round(item.averageMinute)}m` : ''}</small>
-                  </div>
-                ))
-                : profile.coreItems.slice(0, 6).map((item, index) => (
-                  <div className="build-path-step" key={item.id}>
-                    <span className="order-badge">{index + 1}</span>
-                    {itemIcon(item.id, 52)}
-                    <span>{itemCatalog.get(item.id)?.name ?? `Item ${item.id}`}</span>
-                    <small>{percent(item.winRate)} · {item.games}×</small>
-                  </div>
-                ))}
-            </div>
-          </div>
-
-          {profile.skillOrder.length > 0 && (
-            <div className="build-path-block">
-              <h3 className="build-section-title">Skill order</h3>
-              <div className="skill-order-row">
-                {profile.skillOrder.slice(0, 4).map((entry) => (
-                  <div className="skill-order-chip" key={entry.order}>
-                    <span className="skill-order-letters">
-                      {entry.order.split('').map((slot, index) => (
-                        <b key={index} className={`skill-${slot}`}>{['', 'Q', 'W', 'E', 'R'][Number(slot)] ?? '?'}</b>
+              <h3 className="bp-section-title">Summoner spells</h3>
+              <div className="bp-spells">
+                {profile.spells.slice(0, 3).map((spell) => (
+                  <span className="bp-spell-pair" key={spell.ids.join('-')}>
+                    <span className="bp-spell-icons">
+                      {spell.ids.map((id) => (
+                        <img
+                          key={id}
+                          src={`https://ddragon.leagueoflegends.com/cdn/${patch || '14.1.1'}/img/spell/${spellName(id)}.png`}
+                          alt={summonerSpells[id] ?? `Spell ${id}`}
+                          title={summonerSpells[id] ?? `Spell ${id}`}
+                          width="38"
+                          height="38"
+                          loading="lazy"
+                          onError={(event) => { (event.currentTarget as HTMLImageElement).style.opacity = '0.25' }}
+                        />
                       ))}
                     </span>
-                    <small>{entry.games}×</small>
+                    <span className="bp-spell-meta">{percent(spell.winRate)} · {spell.games}×</span>
+                  </span>
+                ))}
+                {!profile.spells.length && <span className="empty-state">No spell sample.</span>}
+              </div>
+
+              {profile.skillOrder.length > 0 && (
+                <>
+                  <h3 className="bp-section-title">Skill order</h3>
+                  <div className="bp-skill-orders">
+                    {profile.skillOrder.slice(0, 3).map((entry) => (
+                      <div className="bp-skill-order" key={entry.order}>
+                        <span className="bp-skill-letters">
+                          {entry.order.split('').map((slot, index) => (
+                            <b key={index} className={`skill-${slot}`}>{['', 'Q', 'W', 'E', 'R'][Number(slot)] ?? '?'}</b>
+                          ))}
+                        </span>
+                        <em>{entry.games}×</em>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </>
+              )}
             </div>
-          )}
 
-          <div className="build-path-block">
-            <h3 className="build-section-title">Runes</h3>
-            <div className="build-path-runes">
-              <div className="build-rune-trees">
-                {profile.primaryStyles.map((style) => (
-                  <span className="rune-tree-chip" key={`p-${style.id}`}><strong>Primary</strong> {runeNames.get(style.id) ?? style.id} · {style.games}×</span>
-                ))}
-                {profile.secondaryStyles.map((style) => (
-                  <span className="rune-tree-chip" key={`s-${style.id}`}><strong>Secondary</strong> {runeNames.get(style.id) ?? style.id} · {style.games}×</span>
-                ))}
+            <div className="bp-col bp-col-items">
+              <h3 className="bp-section-title">Start</h3>
+              <div className="bp-strip">
+                {profile.startingItems.length
+                  ? profile.startingItems.map((item) => (
+                    <ItemTile key={item.id} id={item.id} size={40} caption={`${item.games}×`} />
+                  ))
+                  : <span className="empty-state">No starting-item sample.</span>}
               </div>
-              <div className="build-rune-keystones">
-                {profile.keystones.slice(0, 3).map((keystone) => {
-                  const rune = runeCatalog.get(keystone.id)
-                  return (
-                    <span className="rune-chip" key={keystone.id}>
-                      {rune?.icon && <img src={`https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}`} alt={rune.name} width="28" height="28" loading="lazy" />}
-                      {rune?.name ?? `Rune ${keystone.id}`}
-                      <small>{keystone.games}×</small>
-                    </span>
-                  )
-                })}
+
+              <h3 className="bp-section-title">Boots</h3>
+              <div className="bp-strip">
+                {profile.boots.length
+                  ? profile.boots.map((item) => (
+                    <ItemTile key={item.id} id={item.id} size={40} badge={percent(item.winRate)} caption={`${item.games}×`} />
+                  ))
+                  : <span className="empty-state">No boots sample.</span>}
+              </div>
+
+              <h3 className="bp-section-title">Build order</h3>
+              <div className="bp-strip bp-strip-core">
+                {hasCore
+                  ? coreTiles.map((tile, index) => (
+                    <div className="bp-core-step" key={`${tile.id}-${index}`}>
+                      <span className="bp-core-index">{index + 1}</span>
+                      <ItemTile id={tile.id} size={48} badge={tile.badge} caption={tile.caption} />
+                    </div>
+                  ))
+                  : <span className="empty-state">No build-order sample.</span>}
               </div>
             </div>
           </div>
 
-          <div className="build-path-block">
-            <h3 className="build-section-title">Summoner spells</h3>
-            <div className="build-path-spells">
-              {profile.spells.slice(0, 3).map((spell) => (
-                <span className="spell-chip" key={spell.ids.join('-')}>
-                  {spell.ids.map((id) => (
-                    <img
-                      key={id}
-                      src={`https://ddragon.leagueoflegends.com/cdn/${patch || '14.1.1'}/img/spell/${spellName(id)}.png`}
-                      alt={summonerSpells[id] ?? `Spell ${id}`}
-                      title={summonerSpells[id] ?? `Spell ${id}`}
-                      width="40"
-                      height="40"
-                      loading="lazy"
-                      onError={(event) => { (event.currentTarget as HTMLImageElement).style.opacity = '0.25' }}
-                    />
-                  ))}
-                  <small>{percent(spell.winRate)} · {spell.games}×</small>
-                </span>
-              ))}
-              {!profile.spells.length && <span className="empty-state">No spell sample.</span>}
-            </div>
-          </div>
-
-          <div className="build-path-block">
-            <h3 className="build-section-title">Boots</h3>
-            <div className="build-path-row">
-              {profile.boots.length
-                ? profile.boots.map((item) => (
-                  <div className="build-path-step" key={item.id}>
-                    {itemIcon(item.id, 44)}
-                    <span>{itemCatalog.get(item.id)?.name ?? `Item ${item.id}`}</span>
-                    <small>{percent(item.winRate)} · {item.games}×</small>
-                  </div>
-                ))
-                : <span className="empty-state">No boots sample.</span>}
-            </div>
-          </div>
-
-          <p className="disclaimer">Observational KR OTP evidence. Sample sizes matter; small samples are directional only.</p>
+          <p className="disclaimer">Observational evidence from captured Irelia games. Sample sizes matter; small samples are directional only.</p>
         </>
       )}
     </section>
@@ -697,16 +829,22 @@ function ApiUsagePanel({
   onRefresh: () => void
 }) {
   const usage = status?.usage ?? emptyApiUsage
-  const routeNames: Routing[] = ['EUROPE', 'ASIA', 'KR', 'EUN1']
-  const totalCalls = routeNames.reduce((total, route) => total + usage.routes[route].lastTwoMinutes, 0)
+  const routeNames: Routing[] = ['EUROPE', 'ASIA', 'KR', 'EUN1', 'AMERICAS', 'EUW1', 'NA1']
 
   return (
     <details className="api-usage-panel">
       <summary>
         <span>API usage</span>
-        <span>{totalCalls} local calls / 2m</span>
+        <span>
+          {usage.app.lastTwoMinutes} of {usage.localBudget.perTwoMinutes} requests / 2m
+        </span>
       </summary>
       <div className="usage-content">
+        <div className="usage-route is-app">
+          <strong>All routes (key limit)</strong>
+          <progress value={usage.app.lastTwoMinutes} max={usage.localBudget.perTwoMinutes} />
+          <span>{usage.app.lastTwoMinutes}/{usage.localBudget.perTwoMinutes} in 2m</span>
+        </div>
         <div className="usage-route-list">
           {routeNames.map((route) => {
             const current = usage.routes[route]
@@ -727,85 +865,6 @@ function ApiUsagePanel({
   )
 }
 
-function MatchBuildDetail({
-  match,
-  itemCatalog,
-  runeCatalog,
-  patch,
-}: {
-  match: MatchSample
-  itemCatalog: Map<number, ItemInfo>
-  runeCatalog: Map<number, NamedId>
-  patch: string
-}) {
-  return (
-    <article className="match-build-card">
-      <div className="match-build-heading">
-        <div>
-          <strong>{match.champion} · {match.position} vs {match.opponent ?? 'unknown lane'}</strong>
-          <span>{match.patch} · {match.kills}/{match.deaths}/{match.assists} K/D/A</span>
-        </div>
-        <strong className={match.win ? 'win-text' : 'loss-text'}>{match.win ? 'WIN' : 'LOSS'}</strong>
-      </div>
-      <p className="match-detail-label">Completed inventory</p>
-      <div className="match-icon-row">
-        {match.items.map((id, index) => {
-          const item = itemCatalog.get(id)
-          return item && patch ? (
-            <img
-              key={`${id}-${index}`}
-              className="match-item-icon"
-              src={`https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${item.image}`}
-              alt={item.name}
-              title={item.name}
-              width="38"
-              height="38"
-              loading="lazy"
-            />
-          ) : <span className="item-icon-placeholder" key={`${id}-${index}`}>{id}</span>
-        })}
-        {!match.items.length && <span>No completed items returned.</span>}
-      </div>
-      {match.laneItems.length > 0 && (
-        <>
-          <p className="match-detail-label">Purchases through 15 minutes</p>
-          <div className="match-purchase-timeline">
-            {[...match.laneItems].sort((a, b) => a.minute - b.minute).map((purchase, index) => {
-              const item = itemCatalog.get(purchase.id)
-              return (
-                <div className="timeline-purchase" key={`${purchase.id}-${index}`}>
-                  {item && patch ? (
-                    <img src={`https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${item.image}`} alt="" width="26" height="26" loading="lazy" />
-                  ) : <span className="item-icon-placeholder">{purchase.id}</span>}
-                  <span>{purchase.minute}m</span>
-                </div>
-              )
-            })}
-          </div>
-        </>
-      )}
-      <p className="match-detail-label">Rune page</p>
-      <div className="match-rune-row">
-        {match.runeIds.map((id) => {
-          const rune = runeCatalog.get(id)
-          return rune?.icon ? (
-            <img
-              key={id}
-              src={`https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}`}
-              alt={rune.name}
-              title={rune.name}
-              width="28"
-              height="28"
-              loading="lazy"
-            />
-          ) : <span key={id} title={rune?.name ?? `Rune ${id}`}>{rune?.name ?? id}</span>
-        })}
-        {!match.runeIds.length && <span>Rune data unavailable.</span>}
-      </div>
-    </article>
-  )
-}
-
 /* ============================ Recommended build ============================ */
 
 function RecommendedBuildView({
@@ -818,12 +877,10 @@ function RecommendedBuildView({
   patch,
   buildFocus,
   setBuildFocus,
+  laneOpponent,
   laneBuild,
   compBuild,
-  activeOpponent,
-  laneSampleCount,
-  compSampleCount,
-  verifiedCount,
+  loading,
 }: {
   status: ApiStatus | null
   refreshApiStatus: () => void
@@ -834,48 +891,19 @@ function RecommendedBuildView({
   patch: string
   buildFocus: BuildFocus
   setBuildFocus: (value: BuildFocus) => void
-  laneBuild: BuildEvidence
-  compBuild: BuildEvidence
-  activeOpponent: number
-  laneSampleCount: number
-  compSampleCount: number
-  verifiedCount: number
+  laneOpponent: number
+  laneBuild: BuildResponse | null
+  compBuild: BuildResponse | null
+  loading: boolean
 }) {
   const active = buildFocus === 'lane' ? laneBuild : compBuild
-  const focusedLabel = buildFocus === 'lane'
-    ? (activeOpponent ? `vs ${championNames.get(activeOpponent) ?? 'selected opponent'}` : 'laning route')
-    : 'composition alternative'
-
-  if (!verifiedCount) {
-    return (
-      <div className="view-grid">
-        <section className="panel span-full">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Verified KR OTP games only</p>
-              <h2>Recommended build</h2>
-            </div>
-            <ApiUsagePanel status={status} onRefresh={refreshApiStatus} />
-          </div>
-          <p className="empty-state">No verified OTP games match the current patch in this sample yet. Run a fresh KR scan from the OTP Scouting view while online; older-patch data is never presented as current.</p>
-        </section>
-      </div>
-    )
-  }
-
-  const spellPairs = active.spells.length
-    ? [active.spells.map((entry) => entry.id), ...(
-      active.spells.filter((entry) => !active.spells.slice(0, 2).some((first) => first.id === entry.id)).slice(0, 1).map((entry) => [entry.id])
-    )].slice(0, 1)
-    : []
-  const primaryRunes = active.runes.slice(0, 4)
-  const coreItems = active.purchasePath.length
-    ? active.purchasePath.slice(0, 6).map((entry) => ({
-      id: entry.id,
-      minute: Math.round(entry.averageMinute),
-      winRate: active.items.find((item) => item.id === entry.id)?.winRate ?? active.winRate,
-    }))
-    : active.items.slice(0, 6).map((item) => ({ id: item.id, minute: null as number | null, winRate: item.winRate }))
+  const opponentName = laneOpponent ? championNames.get(laneOpponent) ?? 'selected opponent' : null
+  const title = buildFocus === 'lane'
+    ? (opponentName ? `Irelia vs ${opponentName}` : 'Irelia laning route')
+    : 'Irelia composition build'
+  const subtitle = buildFocus === 'lane'
+    ? 'Runes, skill order, item path, spells and boots from captured Irelia mains against this matchup.'
+    : 'The same build engine, weighted toward games whose teams resemble your draft.'
 
   return (
     <div className="view">
@@ -891,12 +919,9 @@ function RecommendedBuildView({
         <div className="build-hero-copy">
           <p className="eyebrow">Patch {patch || 'unknown'} · observational evidence</p>
           <h1>Irelia recommended build</h1>
-          <p>{focusedLabel} · {active.sample} matching verified games · {percent(active.winRate)} observed win rate</p>
+          <p>{active ? `${active.games} captured games · ${percent(active.profile.winRate)} observed win rate` : 'Pick a matchup to load the build'}</p>
         </div>
-        <div className="build-hero-score">
-          <strong>{active.sample ? percent(active.winRate) : '—'}</strong>
-          <span>item-sample win rate</span>
-        </div>
+        <ApiUsagePanel status={status} onRefresh={refreshApiStatus} />
       </section>
 
       <div className="role-segment" role="tablist" aria-label="Build focus">
@@ -904,133 +929,18 @@ function RecommendedBuildView({
         <button type="button" role="tab" aria-selected={buildFocus === 'comp'} className={buildFocus === 'comp' ? 'selected' : ''} onClick={() => setBuildFocus('comp')}>Composition</button>
       </div>
 
-      {!active.sample && (
-        <section className="panel">
-          <p className="empty-state">
-            {buildFocus === 'lane'
-              ? 'No verified games face your selected lane opponent yet. Try another opponent or the composition view.'
-              : 'No verified games overlap your selected composition yet. Add more picks or switch to the laning view.'}
-          </p>
-        </section>
-      )}
+      {loading && <section className="panel"><p className="empty-state">Building matchup profile…</p></section>}
 
-      {active.sample > 0 && (
-        <div className="view-grid">
-          <section className="panel span-full">
-            <h3 className="build-section-title">Core build order <span className="count">{active.itemSample} games with purchases</span></h3>
-            <div className="core-build">
-              {coreItems.map((entry, index) => {
-                const item = itemCatalog.get(entry.id)
-                return (
-                  <div className="core-item" key={entry.id}>
-                    <span className="order-badge">{index + 1}</span>
-                    {item && patch ? (
-                      <img src={`https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${item.image}`} alt={item.name} width="58" height="58" loading="lazy" />
-                    ) : <span className="item-icon-placeholder">{entry.id}</span>}
-                    <strong>{item?.name ?? `Item ${entry.id}`}</strong>
-                    <small>{percent(entry.winRate)}{entry.minute !== null ? ` · ~${entry.minute}m` : ''}</small>
-                  </div>
-                )
-              })}
-            </div>
-          </section>
-
-          <section className="panel">
-            <h3 className="build-section-title">Summoner spells</h3>
-            {spellPairs.length ? (
-              <div className="spell-row">
-                {active.spells.slice(0, 4).map((spell) => (
-                  <div className="spell-chip" key={spell.id}>
-                    <img
-                      src={`https://ddragon.leagueoflegends.com/cdn/${patch || '14.1.1'}/img/spell/${spellName(spell.id)}.png`}
-                      alt={summonerSpells[spell.id] ?? `Spell ${spell.id}`}
-                      title={summonerSpells[spell.id] ?? `Spell ${spell.id}`}
-                      width="52"
-                      height="52"
-                      loading="lazy"
-                      onError={(event) => { (event.currentTarget as HTMLImageElement).style.opacity = '0.25' }}
-                    />
-                    <span>{summonerSpells[spell.id] ?? `Spell ${spell.id}`}</span>
-                    <span>{spell.count}×</span>
-                  </div>
-                ))}
-              </div>
-            ) : <p className="empty-state">No summoner-spell sample captured yet.</p>}
-          </section>
-
-          <section className="panel">
-            <h3 className="build-section-title">Keystones</h3>
-            {active.keystones.length ? (
-              <div className="rune-row">
-                {active.keystones.map((keystone) => {
-                  const rune = runeCatalog.get(keystone.id)
-                  return (
-                    <div className="rune-chip" key={keystone.id}>
-                      {rune?.icon && <img src={`https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}`} alt={rune.name} width="30" height="30" loading="lazy" />}
-                      <span>{rune?.name ?? `Rune ${keystone.id}`}</span>
-                      <small>{keystone.count}×</small>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : <p className="empty-state">No keystone sample captured yet.</p>}
-          </section>
-
-          <section className="panel">
-            <h3 className="build-section-title">Rune trees</h3>
-            <div className="rune-trees">
-              {active.primaryStyles.map((style) => (
-                <div className="rune-tree-chip" key={`p-${style.id}`}>
-                  <strong>Primary</strong>
-                  <span>{runeNames.get(style.id) ?? `Tree ${style.id}`} · {style.count}×</span>
-                </div>
-              ))}
-              {active.secondaryStyles.map((style) => (
-                <div className="rune-tree-chip" key={`s-${style.id}`}>
-                  <strong>Secondary</strong>
-                  <span>{runeNames.get(style.id) ?? `Tree ${style.id}`} · {style.count}×</span>
-                </div>
-              ))}
-            </div>
-            <div className="rune-row" style={{ marginTop: 12 }}>
-              {primaryRunes.map((rune) => {
-                const detail = runeCatalog.get(rune.id)
-                return detail?.icon ? (
-                  <img
-                    key={rune.id}
-                    src={`https://ddragon.leagueoflegends.com/cdn/img/${detail.icon}`}
-                    alt={detail.name}
-                    title={`${detail.name} · ${rune.count} games`}
-                    width="30"
-                    height="30"
-                    loading="lazy"
-                  />
-                ) : <span key={rune.id}>{detail?.name ?? `Rune ${rune.id}`}</span>
-              })}
-            </div>
-          </section>
-
-          <section className="panel span-full">
-            <h3 className="build-section-title">Item options <span className="count">{active.itemSample} games</span></h3>
-            <div className="item-option-list">
-              {active.items.map((item) => (
-                <ItemOption key={item.id} id={item.id} count={item.count} winRate={item.winRate} item={itemCatalog.get(item.id)} patch={patch} />
-              ))}
-              {!active.items.length && <p className="empty-state">No item sample available.</p>}
-            </div>
-          </section>
-
-          {buildFocus === 'lane' && laneSampleCount < 5 && (
-            <section className="panel span-full">
-              <p className="caveat">Matchup-specific sample is under 5 games. Treat this as directional evidence, not a fixed build.</p>
-            </section>
-          )}
-          {buildFocus === 'comp' && compSampleCount < 5 && (
-            <section className="panel span-full">
-              <p className="caveat">Few similar compositions found. This is descriptive match data, not a guaranteed win-rate improvement.</p>
-            </section>
-          )}
-        </div>
+      {!loading && (
+        <BuildPathCard
+          title={title}
+          subtitle={subtitle}
+          response={active}
+          itemCatalog={itemCatalog}
+          runeCatalog={runeCatalog}
+          runeNames={runeNames}
+          patch={patch}
+        />
       )}
 
       <section className="panel">
@@ -1055,158 +965,6 @@ function spellName(id: number) {
     32: 'SummonerSnowball',
   }
   return map[id] ?? 'SummonerFlash'
-}
-
-/* ============================ OTP scouting ============================ */
-
-function OtpScanView({
-  status,
-  refreshApiStatus,
-  itemCatalog,
-  runeCatalog,
-  patch,
-  scan,
-  busy,
-  apiReady,
-  onScan,
-  tier,
-  setTier,
-  lane,
-  setLane,
-  scanSort,
-  setScanSort,
-  activeOtpCandidates,
-}: {
-  status: ApiStatus | null
-  refreshApiStatus: () => void
-  itemCatalog: Map<number, ItemInfo>
-  runeCatalog: Map<number, NamedId>
-  patch: string
-  scan: OtpScan | null
-  busy: string | null
-  apiReady: boolean
-  onScan: () => void
-  tier: Tier
-  setTier: (value: Tier) => void
-  lane: OtpLane | null
-  setLane: (value: OtpLane | null) => void
-  scanSort: OtpSortMode
-  setScanSort: (value: OtpSortMode) => void
-  activeOtpCandidates: OtpCandidate[]
-}) {
-  return (
-    <div className="view-grid">
-      <section className="panel span-full">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">KR · bounded ladder sample</p>
-            <h2>Find Irelia one-tricks</h2>
-          </div>
-          <ApiUsagePanel status={status} onRefresh={refreshApiStatus} />
-        </div>
-        <div className="scan-controls">
-          <label>
-            <span>KR rank pool</span>
-            <select value={tier} onChange={(event) => setTier(event.target.value as Tier)}>
-              <option value="all">All high tiers</option>
-              <option value="challenger">Challenger</option>
-              <option value="grandmaster">Grandmaster</option>
-              <option value="master">Master</option>
-            </select>
-          </label>
-          <div className="role-segment" role="group" aria-label="Lane filter">
-            <button type="button" className={`role-top ${lane === 'TOP' ? 'selected' : ''}`} onClick={() => setLane(lane === 'TOP' ? null : 'TOP')}>TOP</button>
-            <button type="button" className={`role-mid ${lane === 'MID' ? 'selected' : ''}`} onClick={() => setLane(lane === 'MID' ? null : 'MID')}>MID</button>
-          </div>
-          <label>
-            <span>Sort by</span>
-            <select value={scanSort} onChange={(event) => setScanSort(event.target.value as OtpSortMode)}>
-              <option value="active">Active OTP</option>
-              <option value="winrate">Highest win rate</option>
-              <option value="mastery">Mastery</option>
-              <option value="sample">Most recent games</option>
-            </select>
-          </label>
-          <button type="button" className="action-button" onClick={onScan} disabled={busy !== null || !apiReady}>
-            {busy === 'scan' ? 'Scanning…' : 'Scan KR candidates'}
-          </button>
-        </div>
-        <p className="microcopy">
-          Searches a broader sample of high-LP players. Toggle TOP or MID to focus the scan on one lane. Recent lane-specific Irelia activity earns deeper OTP checks.
-        </p>
-        {!apiReady && <p className="caveat">Riot API key not configured. Add RIOT_API_KEY to .env.local and restart to scan.</p>}
-        {scan && (
-          <>
-            <div className="stat-row">
-              <div className="stat-cell"><span>{lane ? `${lane} OTPs` : 'Active OTPs'}</span><strong>{activeOtpCandidates.length}</strong></div>
-              <div className="stat-cell"><span>Ladder accounts</span><strong>{scan.candidatePoolSize}</strong></div>
-              <div className="stat-cell"><span>With Irelia mastery</span><strong>{scan.masteryCandidates}</strong></div>
-            </div>
-            <p className="scan-summary">{scan.note}</p>
-            {scan.lane && (
-              <div className="live-action-row">
-                <span className={`role-tag ${scan.lane === 'TOP' ? 'top' : 'mid'}`}>{scan.lane} filter active</span>
-                <button type="button" className="text-button" onClick={() => setLane(null)}>Clear lane filter</button>
-              </div>
-            )}
-            <div className="candidate-list">
-              {activeOtpCandidates.map((candidate) => {
-                const roleLabel = lane ? candidate.roles.find((role) => role.role === lane) : null
-                const otpLabel = candidate.otpRoles.length
-                  ? `${candidate.otpRoles.join(' + ')} OTP`
-                  : candidate.ireliaGames ? 'Active · scouting' : 'No recent lane Irelia'
-                return (
-                  <article className="candidate-entry" key={candidate.name}>
-                    <details>
-                      <summary className="candidate-row">
-                        <span className="candidate-name">
-                          <strong>{candidate.name}</strong>
-                          <span>{candidate.tier} · {candidate.leaguePoints.toLocaleString()} LP · {candidate.ireliaMasteryPoints.toLocaleString()} mastery</span>
-                        </span>
-                        <span className="candidate-metrics">
-                          <span className={candidate.isOtp ? 'otp-badge' : 'not-otp-badge'}>{otpLabel}</span>
-                          {roleLabel ? (
-                            <span className="metric-chip">
-                              <span>{roleLabel.role} lane</span>
-                              <strong>{roleLabel.ireliaGames}/{roleLabel.rankedGames} · {percent(roleLabel.ireliaShare)} · {roleLabel.ireliaGames ? `${percent(roleLabel.winRate)} WR` : 'no Irelia'}</strong>
-                            </span>
-                          ) : candidate.roles.map((role) => (
-                            <span className="metric-chip" key={role.role}>
-                              <span>{role.role}</span>
-                              <strong>{role.ireliaGames}/{role.rankedGames} · {percent(role.ireliaShare)}</strong>
-                            </span>
-                          ))}
-                          <span className="otp-badge">Expand ▾</span>
-                        </span>
-                      </summary>
-                      <div className="candidate-history-heading">
-                        <strong>Recent ranked match history</strong>
-                        <span>{candidate.rankedSample} ranked games · TOP {percent(candidate.roles[0]?.ireliaShare ?? 0)} · MID {percent(candidate.roles[1]?.ireliaShare ?? 0)}</span>
-                      </div>
-                      <div className="candidate-match-list">
-                        {candidate.matches.map((match) => (
-                          <MatchBuildDetail
-                            key={match.matchId}
-                            match={match}
-                            itemCatalog={itemCatalog}
-                            runeCatalog={runeCatalog}
-                            patch={patch}
-                          />
-                        ))}
-                        {!candidate.matches.length && <p className="empty-state">No recent ranked solo games were returned for this player.</p>}
-                      </div>
-                    </details>
-                  </article>
-                )
-              })}
-              {!activeOtpCandidates.length && <p className="empty-state">No active Korean OTPs passed the recent Irelia filters for this tier and lane. Try a lower tier, clear the lane filter, or widen the search window.</p>}
-            </div>
-          </>
-        )}
-        {!scan && <p className="empty-state">Run a KR scan while online to populate the OTP list. Results are saved in this browser for offline mock drafts.</p>}
-      </section>
-    </div>
-  )
 }
 
 /* ============================ Dashboard ============================ */
@@ -1359,6 +1117,12 @@ function DraftView({
   busy,
   lobbyAllyIds,
   lobbyEnemyIds,
+  build,
+  buildLoading,
+  itemCatalog,
+  runeCatalog,
+  runeNames,
+  patch,
 }: {
   champions: Champion[]
   championNames: Map<number, string>
@@ -1371,11 +1135,36 @@ function DraftView({
   updateComp: (team: 'ally' | 'enemy', index: number, value: number) => void
   clearMock: () => void
   lobby: Lobby | null
-  readLobby: () => void
+  readLobby: (silent?: boolean) => void
   busy: string | null
   lobbyAllyIds: number[]
   lobbyEnemyIds: number[]
+  build: BuildResponse | null
+  buildLoading: boolean
+  itemCatalog: Map<number, ItemInfo>
+  runeCatalog: Map<number, NamedId>
+  runeNames: Map<number, string>
+  patch: string
 }) {
+  // Live champ select keeps itself current without a manual "Read" click, and
+  // auto-detects the enemy laner from the position opposite Irelia so the build
+  // and widget react the moment the opposing top/mid locks in.
+  useEffect(() => {
+    if (draftMode !== 'live') return
+    readLobby(true)
+    const timer = setInterval(() => readLobby(true), 3_500)
+    return () => clearInterval(timer)
+  }, [draftMode, readLobby])
+
+  useEffect(() => {
+    if (draftMode !== 'live' || !lobby) return
+    const me = lobby.myTeam.find((pick) => pick.championId === 39)
+    const myPosition = me?.assignedPosition
+    if (!myPosition) return
+    const enemy = lobby.theirTeam.find((pick) => pick.assignedPosition === myPosition)
+    if (enemy?.championId && enemy.championId > 0) setLaneOpponent(enemy.championId)
+  }, [draftMode, lobby, setLaneOpponent])
+
   return (
     <div className="view-grid">
       <section className="panel span-full">
@@ -1423,6 +1212,21 @@ function DraftView({
           </>
         )}
       </section>
+
+      {buildLoading && <section className="panel span-full"><p className="empty-state">Building matchup profile…</p></section>}
+      {!buildLoading && (
+        <section className="span-full">
+          <BuildPathCard
+            title={laneOpponent ? `Irelia vs ${championNames.get(laneOpponent) ?? 'opponent'} in draft` : 'Irelia draft composition'}
+            subtitle="Runes, skill order, item path, spells and boots aggregated from KR Irelia games for your current draft picks, cached on disk."
+            response={build}
+            itemCatalog={itemCatalog}
+            runeCatalog={runeCatalog}
+            runeNames={runeNames}
+            patch={patch}
+          />
+        </section>
+      )}
     </div>
   )
 }
@@ -1470,7 +1274,8 @@ function DockView({
   apiReady: boolean
   hasScan: boolean
 }) {
-  const savedAt = scan ? new Date((scan as unknown as { scannedAt?: number }).scannedAt ?? Date.now()).toLocaleString() : null
+  const scannedAt = scan ? (scan as unknown as { scannedAt?: number }).scannedAt : undefined
+  const savedAt = scannedAt ? new Date(scannedAt).toLocaleString() : null
   return (
     <div className="view-grid dock-grid">
       <section className="panel dock-controls">
@@ -1505,7 +1310,7 @@ function DockView({
           <BuildPathCard
             title={opponent ? `Irelia vs ${championNames.get(opponent) ?? 'opponent'} · ${lane}` : `Irelia · ${lane} lane`}
             subtitle={opponent
-              ? 'Runes, skill order, item path, spells and boots aggregated from KR Irelia OTP games against this matchup.'
+              ? 'Runes, skill order, item path, spells and boots aggregated from KR Irelia games against this matchup.'
               : 'Set an opponent for a matchup-specific build, or browse the overall lane route.'}
             response={build}
             itemCatalog={itemCatalog}
@@ -1525,8 +1330,10 @@ function WidgetView({
   status,
   onRefresh,
   onExpand,
-  allies,
-  enemies,
+  opponent,
+  setOpponent,
+  champions,
+  championNames,
   sample,
   itemCatalog,
   runeCatalog,
@@ -1535,8 +1342,10 @@ function WidgetView({
   status: ApiStatus | null
   onRefresh: () => void
   onExpand: () => void
-  allies: string[]
-  enemies: string[]
+  opponent: number
+  setOpponent: (id: number) => void
+  champions: Champion[]
+  championNames: Map<number, string>
   sample: BuildEvidence
   itemCatalog: Map<number, ItemInfo>
   runeCatalog: Map<number, NamedId>
@@ -1551,6 +1360,7 @@ function WidgetView({
       minute: Math.round(item.averageMinute),
     }))
     : sample.items.slice(0, 6).map((item) => ({ ...item, minute: null as number | null }))
+  const opponentName = opponent ? championNames.get(opponent) ?? `#${opponent}` : null
 
   return (
     <div className="widget-shell">
@@ -1558,18 +1368,25 @@ function WidgetView({
         <header className="widget-header">
           <div>
             <p className="eyebrow">Patch {patch || 'unknown'}</p>
-            <h1>Irelia build widget</h1>
+            <h1>Irelia vs {opponentName ?? 'lane'}</h1>
           </div>
           <button type="button" className="action-button secondary-action" onClick={onExpand}>Full dashboard</button>
         </header>
         <section className="widget-composition">
-          <div><span>My team</span><strong>{allies.length ? allies.join(' · ') : 'Irelia · composition not set'}</strong></div>
-          <div><span>Enemy team</span><strong>{enemies.length ? enemies.join(' · ') : 'Composition not set'}</strong></div>
+          <div>
+            <span>Lane opponent</span>
+            <select value={opponent} onChange={(event) => setOpponent(Number(event.target.value))}>
+              <option value={0}>Any (whole lane route)</option>
+              {champions.map((champion) => (
+                <option key={champion.id} value={champion.id}>{champion.name}</option>
+              ))}
+            </select>
+          </div>
         </section>
         <main className="widget-build">
           <div className="widget-build-heading">
             <div>
-              <p className="eyebrow">Observed KR OTP games</p>
+              <p className="eyebrow">Observed Irelia games vs this lane</p>
               <h2>{sample.sample ? `${sample.sample} matching games` : 'No matching build sample'}</h2>
             </div>
             {sample.sample > 0 && <strong className="widget-win-rate">{percent(sample.winRate)} WR</strong>}
@@ -1607,42 +1424,587 @@ function WidgetView({
   )
 }
 
+type CacheStats = {
+  matchFiles: number
+  timelineFiles: number
+  ireliaGames: number
+  topGames: number
+  midGames: number
+  matchupCount: number
+  target: number
+  cacheBytes?: number
+  cacheLimitBytes?: number
+}
+
+type MatchupSummary = {
+  opponentChampionId: number
+  opponentName: string
+  games: number
+  shrunkenWinRate: number
+}
+
+type CoverageEntry = {
+  opponentChampionId: number
+  opponentName: string
+  games: number
+  covered: boolean
+}
+
+type CoverageReport = {
+  lane: string | null
+  target: number
+  matchups: CoverageEntry[]
+  coveredCount: number
+  totalCount: number
+  gamesNeeded: number
+}
+
+type DeepenOutcome = {
+  coverage: CoverageReport
+  matchesAdded: number
+  pagesWalked: number
+  requestsUsed: number
+  stopReason: string
+  candidates: number
+}
+
+type LiveGame = {
+  inGame: boolean
+  gameTime: number
+  player: {
+    summonerName: string
+    championName: string
+    team: string
+    level: number
+    creepScore: number
+    wardScore: number
+    kills: number
+    deaths: number
+    assists: number
+    csPerMin: number
+  } | null
+  benchmark: { avgCsPerMin: number; avgVisionPerMin: number; sampleGames: number } | null
+}
+
+/** Compact live CS + vision tracker shown at the top while a game is running,
+ *  or a "not in game" state otherwise. */
+function LiveGameBar({ live }: { live: LiveGame | null }) {
+  if (!live || !live.inGame || !live.player) {
+    return (
+      <section className="live-game-bar" aria-live="polite">
+        <span className="live-game-status"><span className="dot" />Not in a live game</span>
+        <span className="live-game-stat"><small>CS</small><strong>—</strong></span>
+        <span className="live-game-stat"><small>Vision</small><strong>—</strong></span>
+        <span className="live-game-benchmark">Start a match to track CS &amp; vision</span>
+      </section>
+    )
+  }
+  const minutes = Math.floor(live.gameTime / 60)
+  const seconds = Math.floor(live.gameTime % 60)
+  const csDelta = live.player.csPerMin - (live.benchmark?.avgCsPerMin ?? 0)
+  const visionDelta = live.player.wardScore - ((live.benchmark?.avgVisionPerMin ?? 0) * (live.gameTime / 60))
+  return (
+    <section className="live-game-bar is-live" aria-live="polite">
+      <span className="live-game-status">
+        <span className="dot" />
+        Live · {minutes}:{String(seconds).padStart(2, '0')}
+      </span>
+      <span className="live-game-stat"><small>CS</small><strong>{live.player.creepScore}</strong><em>{live.player.csPerMin.toFixed(1)}/min</em></span>
+      <span className="live-game-stat"><small>Vision</small><strong>{live.player.wardScore}</strong></span>
+      <span className="live-game-stat"><small>KDA</small><strong>{live.player.kills}/{live.player.deaths}/{live.player.assists}</strong></span>
+      <span className="live-game-stat"><small>Level</small><strong>{live.player.level}</strong></span>
+      {live.benchmark && (
+        <span className="live-game-benchmark" title={`Benchmark from ${live.benchmark.sampleGames} cached Irelia games`}>
+          vs pool: CS {csDelta >= 0 ? '+' : ''}{csDelta.toFixed(1)}/min · Vision {visionDelta >= 0 ? '+' : ''}{Math.round(visionDelta)}
+        </span>
+      )}
+    </section>
+  )
+}
+
+/* ============================ Data Management ============================ */
+
+function DataManagementView({
+  cacheStats, statsLoading, onRefreshStats,
+  scan, progress, busy, onScan, onStop, onRefresh, apiReady, clientStatus,
+  championFiles, patch, onCacheCleared, onDataChanged,
+}: {
+  cacheStats: CacheStats | null
+  statsLoading: boolean
+  onRefreshStats: () => void
+  scan: OtpScan | null
+  progress: ScanProgress | null
+  busy: string | null
+  onScan: () => void
+  onStop: () => void
+  onRefresh: () => void
+  apiReady: boolean
+  clientStatus: ClientStatus | null
+  championFiles: Map<number, string>
+  patch: string
+  /** Drops the in-memory + persisted scan snapshot so a wipe is really a reset. */
+  onCacheCleared: () => void
+  /** The harvested pool changed (deepen/prune): recompute the Stats build. */
+  onDataChanged: () => void
+}) {
+  const target = cacheStats?.target ?? POOL_TARGET
+  const games = cacheStats?.ireliaGames ?? 0
+  const scanning = busy === 'scan'
+  const pctToTarget = Math.min(100, Math.round((games / target) * 100))
+  const [matchups, setMatchups] = useState<MatchupSummary[] | null>(null)
+  // Wiping the cache is destructive, so it takes two deliberate clicks.
+  const [clearStage, setClearStage] = useState<'idle' | 'confirm' | 'working'>('idle')
+  const [clearMessage, setClearMessage] = useState('')
+  // Quality pruning under the storage cap is a gentler version of the wipe:
+  // it drops the worst matches and keeps the good ones.
+  const [pruneStage, setPruneStage] = useState<'idle' | 'confirm' | 'working'>('idle')
+  const [pruneMessage, setPruneMessage] = useState('')
+
+  function pruneWorst() {
+    setPruneStage('working')
+    setPruneMessage('')
+    void apiGet<{ removedMatches: number; freedBytes: number; afterBytes: number; note: string }>('/api/riot/cache/prune?confirm=PRUNE')
+      .then((result) => {
+        setPruneMessage(`Pruned ${result.removedMatches} lowest-quality matches (${formatBytesLocal(result.freedBytes)}). ${result.note}`)
+        onRefreshStats()
+        onDataChanged()
+      })
+      .catch((reason: unknown) => setPruneMessage(reason instanceof Error ? reason.message : 'Could not prune the cache.'))
+      .finally(() => setPruneStage('idle'))
+  }
+  // Coverage-driven deepening: how far the pool still is from a readable sample
+  // per matchup, and the walk that closes the gap.
+  const [coverageLane, setCoverageLane] = useState<'TOP' | 'MID'>('TOP')
+  const [coverage, setCoverage] = useState<CoverageReport | null>(null)
+  const [deepening, setDeepening] = useState(false)
+  const [deepenProgress, setDeepenProgress] = useState<ScanProgress | null>(null)
+  const [deepenSummary, setDeepenSummary] = useState('')
+  const [deepenSource, setDeepenSource] = useState<EventSource | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void apiGet<CoverageReport>(`/api/riot/coverage?lane=${coverageLane}&target=${MATCHUP_TARGET}`)
+      .then((data) => { if (!cancelled) setCoverage(data) })
+      .catch(() => { if (!cancelled) setCoverage(null) })
+    return () => { cancelled = true }
+  }, [coverageLane])
+
+  /**
+   * Walks the last scan's one-tricks backwards through their match history until
+   * every matchup in the lane reaches the target. Progress is streamed, so the
+   * extension is observable rather than something you have to take on faith.
+   */
+  function startDeepen() {
+    if (deepening) {
+      deepenSource?.close()
+      setDeepenSource(null)
+      setDeepening(false)
+      setDeepenProgress(null)
+      setDeepenSummary('Stopped. Everything pulled so far is kept.')
+      return
+    }
+    setDeepening(true)
+    setDeepenSummary('')
+    setDeepenProgress({ phase: 'coverage', message: 'Measuring matchup coverage…', done: 0, total: 0 })
+
+    const source = new EventSource(`/api/riot/deepen-stream?lane=${coverageLane}&target=${MATCHUP_TARGET}&budget=400`)
+    setDeepenSource(source)
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as
+          | { type: 'progress'; phase: string; message: string; done: number; total: number }
+          | { type: 'result'; result: DeepenOutcome }
+          | { type: 'error'; message: string }
+        if (payload.type === 'progress') {
+          setDeepenProgress({ phase: payload.phase, message: payload.message, done: payload.done, total: payload.total })
+        } else if (payload.type === 'result') {
+          setCoverage(payload.result.coverage)
+          setDeepenProgress(null)
+          setDeepening(false)
+          setDeepenSource(null)
+          setDeepenSummary(
+            payload.result.matchesAdded === 0
+              ? `Nothing further back to find — ${payload.result.coverage.coveredCount} of ${payload.result.coverage.totalCount} matchups at target.`
+              : `Added ${payload.result.matchesAdded} older games from ${payload.result.candidates} one-tricks · walked ${payload.result.pagesWalked} history pages · ${payload.result.requestsUsed} API calls · stopped: ${payload.result.stopReason.replace('-', ' ')}`,
+          )
+          source.close()
+          onRefreshStats()
+          onDataChanged()
+        } else if (payload.type === 'error') {
+          setDeepenSummary(payload.message)
+          setDeepening(false)
+          setDeepenSource(null)
+          source.close()
+        }
+      } catch {
+        // Keep-alive frames are not JSON.
+      }
+    }
+    source.onerror = () => {
+      setDeepening(false)
+      setDeepenSource(null)
+      setDeepenProgress(null)
+      source.close()
+    }
+  }
+
+  function wipeCache() {
+    setClearStage('working')
+    setClearMessage('')
+    void apiGet<{ filesRemoved: number; kept: string[] }>('/api/riot/cache/clear?confirm=DELETE')
+      .then((result) => {
+        setClearMessage(`Deleted ${result.filesRemoved} cached files. Kept: ${result.kept.join(', ')}.`)
+        setMatchups(null)
+        onCacheCleared()
+        onRefreshStats()
+      })
+      .catch((reason: unknown) => setClearMessage(reason instanceof Error ? reason.message : 'Could not clear the cache.'))
+      .finally(() => setClearStage('idle'))
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    void apiGet<{ matchups: MatchupSummary[] }>('/api/riot/matchups?lane=TOP')
+      .then((data) => { if (!cancelled) setMatchups(data.matchups) })
+      .catch(() => { if (!cancelled) setMatchups(null) })
+    return () => { cancelled = true }
+  }, [])
+
+  return (
+    <div className="view-grid">
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Scan</p>
+            <h2>Harvest games</h2>
+          </div>
+        </div>
+        <p className="microcopy">
+          Crawls the regional ladders for Irelia one-tricks and pulls their recent games until the pool is deep enough
+          for reliable builds.
+        </p>
+        <div className="action-grid">
+          <div className="action-item">
+            {!scanning ? (
+              <button type="button" className="action-button" onClick={onScan} disabled={!apiReady}>
+                {scan ? 'Continue scan' : 'Start scan'}
+              </button>
+            ) : (
+              <button type="button" className="action-button secondary-action" onClick={onStop}>Stop scan</button>
+            )}
+            <p className="action-note">
+              {scanning
+                ? 'Stops the running scan. Every game already saved is kept.'
+                : 'Searches the regional ladders and the priority one-tricks, then saves their recent games.'}
+            </p>
+          </div>
+          <div className="action-item">
+            <button type="button" className="action-button secondary-action" onClick={onRefresh} disabled={!apiReady || scanning}>
+              Force fresh scan
+            </button>
+            <p className="action-note">
+              Ignores the cache and re-downloads the newest games. Slower, but picks up today's matches.
+            </p>
+          </div>
+          <div className="action-item">
+            <button type="button" className="action-button ghost-action" onClick={onRefreshStats}>Reload counters</button>
+            <p className="action-note">
+              Re-reads the saved totals below. This never deletes anything.
+            </p>
+          </div>
+        </div>
+        {progress && (
+          <div className="scan-progress" style={{ marginTop: 12 }}>
+            <div className="scan-progress-head"><span>{progress.phase}</span><span>{progress.message}</span></div>
+            <progress value={progress.done} max={Math.max(progress.total, 1)} />
+          </div>
+        )}
+        {!apiReady && <p className="caveat">Riot API key missing. Add RIOT_API_KEY to .env.local and restart.</p>}
+        <p className="microcopy">Goal: {target} Irelia games for ±5% confidence. Stop anytime; cached data is kept.</p>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Cached data</p>
+            <h2>Current pool</h2>
+          </div>
+        </div>
+        {statsLoading && !cacheStats && <p className="empty-state">Loading cache stats…</p>}
+        {cacheStats && (
+          <>
+            <div className="stat-row">
+              <div className="stat-cell"><span>Irelia games</span><strong>{cacheStats.ireliaGames}</strong></div>
+              <div className="stat-cell"><span>TOP / MID</span><strong>{cacheStats.topGames} / {cacheStats.midGames}</strong></div>
+              <div className="stat-cell"><span>Matchups covered</span><strong>{cacheStats.matchupCount}</strong></div>
+            </div>
+            <div className="stat-row" style={{ marginTop: 10 }}>
+              <div className="stat-cell"><span>Match files</span><strong>{cacheStats.matchFiles}</strong></div>
+              <div className="stat-cell"><span>Timeline files</span><strong>{cacheStats.timelineFiles}</strong></div>
+              <div className="stat-cell">
+                <span>Disk used · cap {formatBytesLocal(cacheStats.cacheLimitBytes ?? 0)}</span>
+                <strong>{formatBytesLocal(cacheStats.cacheBytes ?? 0)}</strong>
+              </div>
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <span className="microcopy">Progress toward ±5% goal ({games}/{target})</span>
+              <progress value={games} max={target} style={{ width: '100%', marginTop: 6 }} />
+              <span className="microcopy">{pctToTarget}% of target</span>
+            </div>
+            <p className="caveat">
+              {clientStatus?.connected
+                ? 'League Client is open — pause scanning and use the live draft data instead.'
+                : 'Client is offline; scanning is safe to run.'}
+            </p>
+          </>
+        )}
+      </section>
+
+      <section className="panel span-full">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Full builds on the go</p>
+            <h2>Matchup coverage</h2>
+          </div>
+          <div className="coverage-controls">
+            <div className="ot-tabs" role="tablist">
+              {(['TOP', 'MID'] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  role="tab"
+                  aria-selected={coverageLane === option}
+                  className={coverageLane === option ? 'is-active' : ''}
+                  onClick={() => setCoverageLane(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className={deepening ? 'action-button secondary-action' : 'action-button'}
+              onClick={startDeepen}
+              disabled={scanning}
+              title={scanning ? 'Stop the scan first' : `Walk the one-tricks' history backwards until each matchup reaches ${MATCHUP_TARGET} games`}
+            >
+              {deepening ? 'Stop deepening' : `Deepen to ${MATCHUP_TARGET} games`}
+            </button>
+          </div>
+        </div>
+
+        {coverage && (
+          <div className="coverage-summary">
+            <div className="stat-row">
+              <div className="stat-cell">
+                <span>Matchups at {coverage.target}+ games</span>
+                <strong>{coverage.coveredCount} / {coverage.totalCount}</strong>
+              </div>
+              <div className="stat-cell">
+                <span>Games still needed</span>
+                <strong>{coverage.gamesNeeded}</strong>
+              </div>
+              <div className="stat-cell">
+                <span>Pool target (±5%)</span>
+                <strong>{POOL_TARGET}</strong>
+              </div>
+            </div>
+            <p className="microcopy">
+              A scan pulls each one-trick&apos;s most recent games once. Deepening walks
+              {' '}<em>further back</em> through their history — with no time limit — and keeps pulling until every
+              matchup reaches {coverage.target} games, the history runs out, or the request budget is spent. The
+              thinnest matchups are listed first below.
+            </p>
+          </div>
+        )}
+
+        {deepenProgress && (
+          <div className="scan-progress" style={{ marginBottom: 12 }}>
+            <div className="scan-progress-head"><span>{deepenProgress.phase}</span><span>{deepenProgress.message}</span></div>
+            <progress value={deepenProgress.done} max={Math.max(deepenProgress.total, 1)} />
+          </div>
+        )}
+        {deepenSummary && <p className="action-note" role="status" style={{ marginBottom: 12 }}>{deepenSummary}</p>}
+
+        {matchups === null && <p className="empty-state">Loading matchup builds…</p>}
+        {matchups && matchups.length === 0 && <p className="empty-state">No matchup builds yet — run a scan first.</p>}
+        {matchups && matchups.length > 0 && (
+          <div className="matchup-grid">
+            {matchups.map((entry) => {
+              // Data Dragon image key, NOT the display name: Wukong -> MonkeyKing,
+              // Nunu & Willump -> Nunu, Cho'Gath -> Chogath.
+              const file = championFiles.get(entry.opponentChampionId)
+              const coverage = Math.min(100, Math.round((entry.games / MATCHUP_TARGET) * 100))
+              const tone = entry.shrunkenWinRate >= 0.52 ? 'is-good' : entry.shrunkenWinRate <= 0.48 ? 'is-bad' : ''
+              return (
+                <div
+                  className="matchup-cell"
+                  key={entry.opponentChampionId}
+                  title={`${entry.opponentName} · ${entry.games} games · ${Math.round(entry.shrunkenWinRate * 100)}% win rate`}
+                >
+                  <span className="matchup-icon">
+                    {file && (
+                      <img
+                        src={`https://ddragon.leagueoflegends.com/cdn/${patch}/img/champion/${file}.png`}
+                        alt={entry.opponentName}
+                        loading="lazy"
+                        onError={(event) => {
+                          const image = event.currentTarget as HTMLImageElement
+                          image.style.display = 'none'
+                          image.parentElement?.classList.add('is-missing-icon')
+                        }}
+                      />
+                    )}
+                    <span className="matchup-fallback">{entry.opponentName.slice(0, 3)}</span>
+                  </span>
+                  <span className="matchup-bar"><span className={`matchup-fill ${tone}`} style={{ width: `${coverage}%` }} /></span>
+                  <span className="matchup-games">{entry.games}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="panel span-full danger-zone">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Danger zone</p>
+            <h2>Delete cached data</h2>
+          </div>
+        </div>
+        <p className="microcopy">
+          Removes every saved match and timeline so harvesting starts from scratch. Your priority one-trick
+          roster is kept — that is your own list, not harvested evidence.
+        </p>
+        {clearStage === 'idle' && (
+          <button
+            type="button"
+            className="action-button danger-action"
+            onClick={() => { setClearMessage(''); setClearStage('confirm') }}
+            disabled={scanning}
+            title={scanning ? 'Stop the scan first' : 'Delete all cached matches and timelines'}
+          >
+            Delete all cached data
+          </button>
+        )}
+        {clearStage !== 'idle' && (
+          <div className="confirm-row">
+            <span className="confirm-text">
+              This cannot be undone. Delete {cacheStats?.matchFiles ?? 0} matches and {cacheStats?.timelineFiles ?? 0} timelines?
+            </span>
+            <button type="button" className="action-button danger-action" onClick={wipeCache} disabled={clearStage === 'working'}>
+              {clearStage === 'working' ? 'Deleting…' : 'Yes, delete everything'}
+            </button>
+            <button type="button" className="action-button ghost-action" onClick={() => setClearStage('idle')} disabled={clearStage === 'working'}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {clearMessage && <p className="action-note" role="status">{clearMessage}</p>}
+
+        <div className="danger-divider" />
+
+        <p className="microcopy">
+          <strong>Storage cap:</strong> if the cache ever outgrows the cap, prune the lowest-quality matches instead
+          of wiping everything. It keeps the good data and drops the worst.
+        </p>
+        {pruneStage === 'idle' && (
+          <button
+            type="button"
+            className="action-button secondary-action"
+            onClick={() => { setPruneMessage(''); setPruneStage('confirm') }}
+            disabled={scanning}
+            title="Drops only the lowest-quality matches: non-Irelia games, old patches, short games and over-covered matchups"
+          >
+            Prune low-quality data
+          </button>
+        )}
+        {pruneStage !== 'idle' && (
+          <div className="confirm-row">
+            <span className="confirm-text">
+              Keeps the good data and drops the worst: non-Irelia games, old patches, short games and over-covered
+              matchups. Your roster and thin matchups stay.
+            </span>
+            <button type="button" className="action-button danger-action" onClick={pruneWorst} disabled={pruneStage === 'working'}>
+              {pruneStage === 'working' ? 'Pruning…' : 'Yes, prune lowest quality'}
+            </button>
+            <button type="button" className="action-button ghost-action" onClick={() => setPruneStage('idle')} disabled={pruneStage === 'working'}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {pruneMessage && <p className="action-note" role="status">{pruneMessage}</p>}
+      </section>
+    </div>
+  )
+}
+
 /* ============================ App ============================ */
+
+/** Type for the Electron bridge exposed by preload.cjs. */
+type DesktopBridge = { setWidgetMode?: (enabled: boolean) => Promise<unknown> }
+
+function setDesktopWidgetMode(enabled: boolean) {
+  const bridge = (window as unknown as { irelia?: DesktopBridge }).irelia
+  if (bridge?.setWidgetMode) void bridge.setWidgetMode(enabled)
+}
 
 function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null)
-  const [catalog, setCatalog] = useState<StaticCatalog | null>(() => readLocal('irelia-fieldbook-catalog', null))
+  const [catalog, setCatalog] = useState<StaticCatalog | null>(() => readLocal('irelia-fieldbook-catalog-v2', null))
   const [gameName, setGameName] = useState('Dobrezaur')
   const [tagLine, setTagLine] = useState('1733')
   const [playerReport, setPlayerReport] = useState<PlayerReport | null>(null)
   const [scan, setScan] = useState<OtpScan | null>(() => readLocal('irelia-fieldbook-scan-v3', null))
   const [lobby, setLobby] = useState<Lobby | null>(null)
   const [draftMode, setDraftMode] = useState<DraftMode>('mock')
-  const [view, setView] = useState<ViewName>(() => readLocal('irelia-fieldbook-view-v3', 'dock'))
-  const [tier, setTier] = useState<Tier>('all')
-  const [otpLane, setOtpLane] = useState<OtpLane | null>(() => readLocal('irelia-fieldbook-otplane', null))
+  // v4 also fixes the read/write key mismatch: the read used `-v3` while the
+  // write used `-v2`, so the selected view never actually persisted.
+  const [view, setView] = useState<ViewName>(() => readLocal('irelia-fieldbook-view-v4', 'onetricks'))
+  const [tier] = useState<Tier>('all')
+  const [scanRegions] = useState<ScanRegion[]>(() => readLocal<ScanRegion[]>('irelia-fieldbook-regions', ['KR', 'EUW', 'EUNE', 'NA']))
+  const [otpLane] = useState<OtpLane | null>(() => readLocal('irelia-fieldbook-otplane', null))
   const [buildFocus, setBuildFocus] = useState<BuildFocus>(() => readLocal('irelia-fieldbook-buildfocus', 'lane'))
   const [laneOpponent, setLaneOpponent] = useState(() => readLocal('irelia-fieldbook-lane', 0))
   const [allyComp, setAllyComp] = useState<number[]>(() => readLocal('irelia-fieldbook-allies', [0, 0, 0, 0]))
   const [enemyComp, setEnemyComp] = useState<number[]>(() => readLocal('irelia-fieldbook-enemies', [0, 0, 0, 0]))
-  const [scanSort, setScanSort] = useState<OtpSortMode>('active')
+  const [scanSort] = useState<OtpSortMode>('active')
   const [busy, setBusy] = useState<'player' | 'scan' | 'lobby' | null>(null)
   const [error, setError] = useState('')
   const [dockLane, setDockLane] = useState<OtpLane>(() => readLocal('irelia-fieldbook-docklane', 'TOP'))
-  const [dockOpponent, setDockOpponent] = useState(() => readLocal('irelia-fieldbook-dockopp', 0))
+  // Deliberately NOT persisted: an auto-detected draft opponent from a past
+  // session is meaningless later and would silently pin the build to a matchup
+  // that no longer has a sample. It starts fresh at "All opponents" each run.
+  const [dockOpponent, setDockOpponent] = useState(0)
   const [dockBuild, setDockBuild] = useState<BuildResponse | null>(null)
   const [dockBuildLoading, setDockBuildLoading] = useState(false)
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
+  const scanAbortRef = useRef<AbortController | null>(null)
+  const [draftBuild, setDraftBuild] = useState<BuildResponse | null>(null)
+  const [draftBuildLoading, setDraftBuildLoading] = useState(false)
+  const [recommendedBuild, setRecommendedBuild] = useState<BuildResponse | null>(null)
+  const [recommendedLoading, setRecommendedLoading] = useState(false)
+
+  /** Stats-page payload: sampled ban rate plus the most recent Irelia games. */
+  const [meta, setMeta] = useState<{ banRate: ConfidenceInterval; banSampleGames: number; games: GameRow[] } | null>(null)
+  const [metaLoading, setMetaLoading] = useState(false)
+  /** Recency window for the stats page (0 = all time). Drives a real refetch. */
+  const [sinceHours, setSinceHours] = useState(() => readLocal('irelia-fieldbook-since', 0))
+  const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
+  const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [liveGame, setLiveGame] = useState<LiveGame | null>(null)
 
   useEffect(() => {
     void apiGet<ApiStatus>('/api/status').then(setApiStatus).catch(() => setApiStatus({ configured: false, mode: 'local', usage: emptyApiUsage }))
     void apiGet<StaticCatalog>('/api/champions')
       .then((data) => {
         setCatalog(data)
-        writeLocal('irelia-fieldbook-catalog', data)
+        writeLocal('irelia-fieldbook-catalog-v2', data)
       })
       .catch((reason: unknown) => {
-        if (!readLocal<StaticCatalog | null>('irelia-fieldbook-catalog', null)) {
+        if (!readLocal<StaticCatalog | null>('irelia-fieldbook-catalog-v2', null)) {
           setError(reason instanceof Error ? reason.message : 'Could not load champion data.')
         }
       })
@@ -1671,8 +2033,16 @@ function App() {
     writeLocal('irelia-fieldbook-enemies', enemyComp)
   }, [allyComp, enemyComp, laneOpponent])
 
-  useEffect(() => { writeLocal('irelia-fieldbook-view-v2', view) }, [view])
+  useEffect(() => { writeLocal('irelia-fieldbook-view-v4', view) }, [view])
+
+  // Entering the Widget view shrinks the Electron window into a compact
+  // always-on-top widget; leaving restores the full window. No-op in a browser.
+  useEffect(() => {
+    setDesktopWidgetMode(view === 'widget')
+    return () => setDesktopWidgetMode(false)
+  }, [view])
   useEffect(() => { writeLocal('irelia-fieldbook-otplane', otpLane) }, [otpLane])
+  useEffect(() => { writeLocal('irelia-fieldbook-regions', scanRegions) }, [scanRegions])
   useEffect(() => { writeLocal('irelia-fieldbook-buildfocus', buildFocus) }, [buildFocus])
 
   const champions = catalog?.champions ?? emptyChampions
@@ -1680,55 +2050,44 @@ function App() {
   const runes = catalog?.runes ?? emptyRunes
   const patch = catalog?.version ?? ''
   const championNames = useMemo(() => new Map(champions.map((champion) => [champion.id, champion.name])), [champions])
+  /**
+   * Champion id -> Data Dragon image key. Required for a handful of champions
+   * whose display name does not match their icon filename.
+   */
+  const championFiles = useMemo(
+    () => new Map(champions.map((champion) => [champion.id, champion.ddragonId ?? champion.name.replace(/[^A-Za-z0-9]/g, '')])),
+    [champions],
+  )
   const itemCatalog = useMemo(() => new Map(items.map((item) => [item.id, item])), [items])
   const runeNames = useMemo(() => new Map(runes.map((rune) => [rune.id, rune.name])), [runes])
   const runeCatalog = useMemo(() => new Map(runes.map((rune) => [rune.id, rune])), [runes])
-  const activePatch = patch.split('.').slice(0, 2).join('.')
-  const verifiedMatches = useMemo(
-    () => (scan?.analyzed.filter((candidate) => candidate.isOtp)
-      .flatMap((candidate) => candidate.matches.filter((match) =>
-        match.championId === 39 && (!candidate.otpRole || match.position === candidate.otpRole),
-      )) ?? [])
-      .filter((match) => !activePatch || match.patch === activePatch),
-    [activePatch, scan],
+  /**
+   * Rune id -> owning tree name. Only the tree entries (`isTree`) carry the tree
+   * name, so this has to be built separately from `runeNames`.
+   */
+  const runeTreeNames = useMemo(
+    () => new Map(
+      runes
+        .filter((rune) => Boolean(rune.tree))
+        .map((rune) => [rune.id, String(rune.tree)]),
+    ),
+    [runes],
   )
+  /**
+   * `patch` is the DATA DRAGON asset version (e.g. 16.19.1), which is what item,
+   * rune and champion icon URLs are built from.
+   *
+   * It is deliberately NOT used to filter matches. Game patches and Data Dragon
+   * versions are different numbering schemes, and the server already derives the
+   * true current game patch from `info.gameVersion`. Sending the Data Dragon
+   * version as a patch filter matched nothing. An empty value tells the server to
+   * pick the most recent patch that actually has data.
+   */
+  const activePatch = ''
 
   const lobbyAllyIds = lobby?.myTeam.map((pick) => pick.championId).filter((id) => id > 0 && id !== 39) ?? []
   const lobbyEnemyIds = lobby?.theirTeam.map((pick) => pick.championId).filter((id) => id > 0) ?? []
-  const selectedAllies = draftMode === 'live' ? lobbyAllyIds : allyComp.filter((id) => id > 0)
-  const selectedEnemies = draftMode === 'live'
-    ? lobbyEnemyIds
-    : [laneOpponent, ...enemyComp].filter((id) => id > 0)
-  const lanePick = lobby?.theirTeam.find((pick) => {
-    const position = pick.assignedPosition?.toLowerCase()
-    return position === 'top' || position === 'middle' || position === 'mid'
-  })?.championId
-  const activeOpponent = draftMode === 'live' ? lanePick || lobbyEnemyIds[0] || 0 : laneOpponent
 
-  const laningSamples = useMemo(
-    () => activeOpponent
-      ? verifiedMatches.filter((match) => match.opponentChampionId === activeOpponent)
-      : [],
-    [activeOpponent, verifiedMatches],
-  )
-  const compSamples = useMemo(() => {
-    if (!selectedAllies.length && !selectedEnemies.length) return []
-    return verifiedMatches
-      .map((match) => {
-        const allyIds = match.allies.map((champion) => champion.id)
-        const enemyIds = match.enemies.map((champion) => champion.id)
-        const overlap = selectedEnemies.filter((id) => enemyIds.includes(id)).length * 2
-          + selectedAllies.filter((id) => allyIds.includes(id)).length
-        return { match, overlap }
-      })
-      .filter(({ overlap }) => overlap > 0)
-      .sort((a, b) => b.overlap - a.overlap)
-      .slice(0, 20)
-      .map(({ match }) => match)
-  }, [selectedAllies, selectedEnemies, verifiedMatches])
-
-  const laneBuild = useMemo(() => aggregateBuild(laningSamples, true), [laningSamples])
-  const compBuild = useMemo(() => aggregateBuild(compSamples, false), [compSamples])
   const activeOtpCandidates = useMemo(() => {
     if (!scan) return []
     const filtered = scan.analyzed.filter((candidate) => {
@@ -1737,11 +2096,14 @@ function App() {
       const hasActivePattern = candidate.isOtp || candidate.ireliaGames >= 7
       return hasActivePattern && (hasLaneEvidence || hasRecentSample)
     })
-    return sortOtpCandidates(filtered, scanSort)
-  }, [scan, scanSort])
-
-  const widgetAllies = ['Irelia', ...selectedAllies.map((id) => championNames.get(id) ?? `#${id}`)]
-  const widgetEnemies = [...new Set(selectedEnemies)].map((id) => championNames.get(id) ?? `#${id}`)
+    return sortOtpCandidates(
+      filtered.map((candidate) => ({
+        ...candidate,
+        matches: candidate.matches.map((match) => normalizeMatchSample(match as unknown as Record<string, unknown>, championNames)),
+      })),
+      scanSort,
+    )
+  }, [scan, scanSort, championNames])
 
   function refreshApiStatus() {
     void apiGet<ApiStatus>('/api/status').then(setApiStatus).catch(() => {})
@@ -1756,7 +2118,15 @@ function App() {
         patch: activePatch,
         ...(opponent > 0 ? { opponent: String(opponent) } : {}),
       })
-      setDockBuild(await apiGet<BuildResponse>(`/api/riot/build?${query}`))
+      const result = await apiGet<BuildResponse>(`/api/riot/build?${query}`)
+      if (result.games === 0 && opponent > 0) {
+        // No sample for that matchup yet. Never show a screen of zeros: fall back
+        // to the lane baseline so a complete build path is always visible.
+        const baseQuery = new URLSearchParams({ lane, source: 'lane', patch: activePatch })
+        setDockBuild(await apiGet<BuildResponse>(`/api/riot/build?${baseQuery}`))
+      } else {
+        setDockBuild(result)
+      }
     } catch {
       setDockBuild(null)
     } finally {
@@ -1770,24 +2140,260 @@ function App() {
   }, [dockLane, dockOpponent, activePatch, scan])
 
   /**
+   * Draft build: mirrors the Dock build but is driven by the Draft view picks.
+   * Uses the lane opponent when set, otherwise the composition lists.
+   */
+  async function fetchDraftBuild() {
+    const opponents = [laneOpponent, ...enemyComp].filter((id) => id > 0)
+    const allies = allyComp.filter((id) => id > 0)
+    const source: 'lane' | 'comp' = laneOpponent > 0 ? 'lane' : 'comp'
+    if (source === 'comp' && !allies.length && !opponents.length) { setDraftBuild(null); return }
+    setDraftBuildLoading(true)
+    try {
+      const query = new URLSearchParams({
+        lane: 'TOP',
+        source,
+        patch: activePatch,
+        ...(source === 'lane' && laneOpponent > 0 ? { opponent: String(laneOpponent) } : {}),
+        ...(source === 'comp' ? { allies: allies.join(','), enemies: opponents.join(',') } : {}),
+      })
+      setDraftBuild(await apiGet<BuildResponse>(`/api/riot/build?${query}`))
+    } catch {
+      setDraftBuild(null)
+    } finally {
+      setDraftBuildLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void fetchDraftBuild()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneOpponent, allyComp, enemyComp, activePatch, scan])
+
+  /**
+   * Recommended build: the same server engine the Dock and Draft use, driven by
+   * the Recommended view's focus (lane vs composition). Keeping one source of
+   * truth means every build surface reports identical numbers.
+   */
+  async function fetchRecommendedBuild() {
+    const opponents = [laneOpponent, ...enemyComp].filter((id) => id > 0)
+    const allies = allyComp.filter((id) => id > 0)
+    const source: 'lane' | 'comp' = buildFocus === 'lane' ? 'lane' : 'comp'
+    if (source === 'lane' && laneOpponent <= 0) { setRecommendedBuild(null); return }
+    if (source === 'comp' && !allies.length && !opponents.length) { setRecommendedBuild(null); return }
+    setRecommendedLoading(true)
+    try {
+      const query = new URLSearchParams({
+        lane: 'TOP',
+        source,
+        patch: activePatch,
+        ...(source === 'lane' ? { opponent: String(laneOpponent) } : {}),
+        ...(source === 'comp' ? { allies: allies.join(','), enemies: opponents.join(',') } : {}),
+      })
+      setRecommendedBuild(await apiGet<BuildResponse>(`/api/riot/build?${query}`))
+    } catch {
+      setRecommendedBuild(null)
+    } finally {
+      setRecommendedLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void fetchRecommendedBuild()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildFocus, laneOpponent, allyComp, enemyComp, activePatch, scan])
+
+  /**
+   * Stats page payload. Fetched from the cache-wide pool, so it populates even
+   * when the scan snapshot is empty. Gated on the Stats view so other screens
+   * never pay for the ban-rate walk over the cache.
+   */
+  useEffect(() => {
+    if (view !== 'onetricks' && view !== 'otps') return
+    let cancelled = false
+    setMetaLoading(true)
+    const query = new URLSearchParams({
+      lane: dockLane,
+      ...(activePatch ? { patch: activePatch } : {}),
+      ...(sinceHours > 0 ? { since: String(sinceHours) } : {}),
+      limit: '50',
+    })
+    void apiGet<{ banRate: ConfidenceInterval; banSampleGames: number; games: GameRow[] }>(`/api/riot/meta?${query}`)
+      .then((data) => { if (!cancelled) setMeta(data) })
+      .catch(() => { if (!cancelled) setMeta(null) })
+      .finally(() => { if (!cancelled) setMetaLoading(false) })
+    return () => { cancelled = true }
+  }, [view, dockLane, activePatch, scan, sinceHours])
+
+  useEffect(() => { writeLocal('irelia-fieldbook-since', sinceHours) }, [sinceHours])
+
+  // Poll League Client presence so the draft can be auto-scanned the moment the
+  // client starts, without a manual click. Only writes state when the status
+  // actually changes so a closed client does not re-render every 5 seconds.
+  useEffect(() => {
+    let cancelled = false
+    async function poll() {
+      try {
+        const status = await apiGet<ClientStatus>('/api/client/status')
+        if (!cancelled) {
+          setClientStatus((previous) =>
+            previous?.connected === status.connected && previous?.inChampSelect === status.inChampSelect
+              ? previous
+              : status,
+          )
+        }
+      } catch {
+        if (!cancelled) setClientStatus(null)
+      }
+    }
+    void poll()
+    const timer = setInterval(poll, 5_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [])
+
+  async function refreshCacheStats() {
+    setStatsLoading(true)
+    try {
+      setCacheStats(await apiGet<CacheStats>('/api/riot/stats'))
+    } catch {
+      setCacheStats(null)
+    } finally {
+      setStatsLoading(false)
+    }
+  }
+
+  /**
+   * After a cache wipe the persisted scan snapshot and the meta panel describe
+   * matches that no longer exist, so both are dropped. Otherwise "start fresh"
+   * would still show stale candidates.
+   */
+  function handleCacheCleared() {
+    setScan(null)
+    setMeta(null)
+    writeLocal('irelia-fieldbook-scan-v3', null)
+  }
+
+  // When champ select is open, auto-fill the lane opponent so the Stats build
+  // reacts to the real draft without a manual pick. When it closes, release the
+  // pick so the build returns to the lane baseline instead of pinning a matchup
+  // from a draft that no longer exists.
+  useEffect(() => {
+    if (!clientStatus?.inChampSelect) {
+      setDockOpponent(0)
+      return
+    }
+    let cancelled = false
+    async function poll() {
+      try {
+        const lobbyData = await apiGet<Lobby>('/api/client/champ-select')
+        if (cancelled || !lobbyData) return
+        const me = lobbyData.myTeam.find((pick) => pick.championId === 39)
+        const myPosition = me?.assignedPosition
+        if (!myPosition) return
+        const enemy = lobbyData.theirTeam.find((pick) => pick.assignedPosition === myPosition)
+        if (enemy?.championId && enemy.championId > 0) setDockOpponent(enemy.championId)
+      } catch {
+        // Champ select ended or is not readable.
+      }
+    }
+    void poll()
+    const timer = setInterval(poll, 4_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [clientStatus?.inChampSelect, setDockOpponent])
+
+  useEffect(() => {
+    void refreshCacheStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scan])
+
+  // Poll the Live Client Data API only while the League Client is connected, so
+  // a closed client never triggers the 2.5s re-render that caused flicker. When
+  // the client is closed the tracker stays hidden and no request fires.
+  useEffect(() => {
+    if (!clientStatus?.connected) {
+      setLiveGame(null)
+      return
+    }
+    let cancelled = false
+    async function poll() {
+      try {
+        const data = await apiGet<LiveGame>('/api/live/game')
+        if (!cancelled) setLiveGame((previous) =>
+          previous?.inGame === data.inGame && previous.player?.creepScore === data.player?.creepScore && previous.player?.wardScore === data.player?.wardScore
+            ? previous
+            : data,
+        )
+      } catch {
+        if (!cancelled) setLiveGame(null)
+      }
+    }
+    void poll()
+    const timer = setInterval(poll, 2_500)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [clientStatus?.connected])
+
+  /**
    * Streams the KR scan via SSE so the UI shows live progress. Falls back to
    * the single-shot endpoint if streaming is unavailable.
    */
-  async function runStreamedScan(refresh: boolean) {
+  async function runStreamedScan(refresh: boolean, rosterOnly = false) {
     setBusy('scan')
     setError('')
-    setScanProgress({ phase: 'starting', message: refresh ? 'Refreshing latest games…' : 'Starting KR scan…', done: 0, total: 0 })
+    setScanProgress({
+      phase: 'starting',
+      message: rosterOnly ? 'Scanning the one-trick roster…' : refresh ? 'Refreshing latest games…' : 'Starting KR scan…',
+      done: 0,
+      total: 0,
+    })
+    const controller = new AbortController()
+    scanAbortRef.current = controller
     try {
-      const result = await streamKoreanScan({ tier, lane: otpLane, onProgress: setScanProgress })
+      const result = await streamKoreanScan({
+        tier,
+        lane: otpLane,
+        regions: scanRegions,
+        rosterOnly,
+        onProgress: setScanProgress,
+        signal: controller.signal,
+      })
       setScan(result)
+
+      /**
+       * Fallback sourcing. When a full high-rank pass downloads nothing new, the
+       * apex pool is exhausted for these patches, so widen to Emerald+ and let
+       * the sparse matchups fill in rather than returning a half-covered pool.
+       */
+      if (!rosterOnly && tier !== 'emerald' && (result.newGames ?? 0) === 0) {
+        setScanProgress({
+          phase: 'fallback',
+          message: 'No new high-rank games — widening to Emerald+ to cover the remaining matchups…',
+          done: 0,
+          total: 0,
+        })
+        const widened = await streamKoreanScan({
+          tier: 'emerald',
+          lane: otpLane,
+          regions: scanRegions,
+          rosterOnly: false,
+          onProgress: setScanProgress,
+          signal: controller.signal,
+        })
+        setScan(widened)
+      }
       // After a fresh scan, recompute the Dock build against the new data.
       void fetchDockBuild(dockLane, dockOpponent)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not scan KR ranked candidates.')
+      const message = reason instanceof Error ? reason.message : 'Could not scan KR ranked candidates.'
+      if (message !== 'Scan stopped.') setError(message)
     } finally {
       setBusy(null)
+      scanAbortRef.current = null
       refreshApiStatus()
     }
+  }
+
+  function stopScan() {
+    scanAbortRef.current?.abort()
   }
 
   async function loadPlayer() {
@@ -1795,7 +2401,11 @@ function App() {
     setError('')
     try {
       const query = new URLSearchParams({ gameName, tagLine, region: 'EUROPE', count: '20' })
-      setPlayerReport(await apiGet<PlayerReport>(`/api/riot/player?${query}`))
+      const report = await apiGet<PlayerReport>(`/api/riot/player?${query}`)
+      setPlayerReport({
+        ...report,
+        matches: report.matches.map((match) => normalizeMatchSample(match as unknown as Record<string, unknown>, championNames)),
+      })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not load player history.')
     } finally {
@@ -1812,15 +2422,15 @@ function App() {
     await runStreamedScan(true)
   }
 
-  async function readLobby() {
-    setBusy('lobby')
+  async function readLobby(silent = false) {
+    if (!silent) setBusy('lobby')
     setError('')
     try {
       setLobby(await apiGet<Lobby>('/api/client/champ-select'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not read champion select.')
     } finally {
-      setBusy(null)
+      if (!silent) setBusy(null)
     }
   }
 
@@ -1840,27 +2450,28 @@ function App() {
 
   const apiReady = Boolean(apiStatus?.configured)
   const navItems: Array<{ id: ViewName; label: string; badge?: number }> = [
-    { id: 'dock', label: 'Dock' },
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'otps', label: 'OTP scouting', badge: scan ? activeOtpCandidates.length : undefined },
-    { id: 'build', label: 'Recommended build' },
-    { id: 'draft', label: 'Draft' },
-    { id: 'widget', label: 'Widget' },
+    { id: 'onetricks', label: 'Stats' },
+    { id: 'datamanagement', label: 'Data' },
+    { id: 'otps', label: 'Onetrick', badge: scan ? activeOtpCandidates.length : undefined },
   ]
 
   if (view === 'widget') {
     return (
-      <WidgetView
-        status={apiStatus}
-        onRefresh={refreshApiStatus}
-        onExpand={() => setView('dashboard')}
-        allies={widgetAllies}
-        enemies={widgetEnemies}
-        sample={compBuild}
-        itemCatalog={itemCatalog}
-        runeCatalog={runeCatalog}
-        patch={patch}
-      />
+      <ViewErrorBoundary label="Widget">
+        <WidgetView
+          status={apiStatus}
+          onRefresh={refreshApiStatus}
+          onExpand={() => setView('onetricks')}
+          opponent={dockOpponent}
+          setOpponent={setDockOpponent}
+          champions={champions}
+          championNames={championNames}
+          sample={buildResponseToEvidence(dockBuild)}
+          itemCatalog={itemCatalog}
+          runeCatalog={runeCatalog}
+          patch={patch}
+        />
+      </ViewErrorBoundary>
     )
   }
 
@@ -1874,7 +2485,7 @@ function App() {
             </svg>
           </span>
           <span className="brand-copy">
-            <strong>Irelia Fieldbook</strong>
+            <strong>Irelia Build Tracker</strong>
             <span>Personal KR Irelia research · EUNE player</span>
           </span>
         </div>
@@ -1882,6 +2493,12 @@ function App() {
           <div className={`connection-state ${apiReady ? 'is-ready' : 'is-missing'}`}>
             <span className="status-dot" />
             {apiReady ? 'Riot API key loaded' : 'Riot API key missing'}
+          </div>
+          <div className={`connection-state ${clientStatus?.connected ? 'is-ready' : 'is-missing'}`} title={clientStatus?.connected ? (clientStatus.inChampSelect ? 'League Client connected and in champion select.' : 'League Client connected.') : 'League Client not detected. Start it to auto-scan your draft.'}>
+            <span className="status-dot" />
+            {clientStatus?.connected
+              ? (clientStatus.inChampSelect ? 'League Client · in champ select' : 'League Client · connected')
+              : 'League Client · not running'}
           </div>
           <ApiUsagePanel status={apiStatus} onRefresh={refreshApiStatus} />
         </div>
@@ -1894,7 +2511,14 @@ function App() {
             type="button"
             className={`nav-button ${view === item.id ? 'active' : ''}`}
             aria-current={view === item.id ? 'page' : undefined}
-            onClick={() => setView(item.id)}
+            onClick={() => {
+              if (item.id === 'champselect') {
+                setDraftMode('live')
+                setView('draft')
+              } else {
+                setView(item.id)
+              }
+            }}
           >
             {item.label}
             {item.badge !== undefined && <span className="nav-badge">{item.badge}</span>}
@@ -1910,6 +2534,35 @@ function App() {
       )}
 
       {error && <div className="error-strip" role="alert">{error}</div>}
+
+      {view === 'onetricks' && <LiveGameBar live={liveGame} />}
+
+      <ViewErrorBoundary key={view} label={navItems.find((item) => item.id === view)?.label ?? String(view)}>
+      {view === 'onetricks' && (
+        <OnetricksView
+          build={dockBuild}
+          loading={dockBuildLoading}
+          championId={39}
+          championName="Irelia"
+          lane={dockLane}
+          setLane={setDockLane}
+          opponent={dockOpponent}
+          setOpponent={setDockOpponent}
+          champions={champions}
+          itemCatalog={itemCatalog}
+          runeCatalog={runeCatalog}
+          runeTreeNames={runeTreeNames}
+          championNames={championNames}
+          championFiles={championFiles}
+          ddragonVersion={patch}
+          banRate={meta?.banRate ?? null}
+          games={meta?.games ?? []}
+          gamesLoading={metaLoading}
+          sinceHours={sinceHours}
+          setSinceHours={setSinceHours}
+          clientStatus={clientStatus}
+        />
+      )}
 
       {view === 'dock' && (
         <DockView
@@ -1960,23 +2613,16 @@ function App() {
       )}
 
       {view === 'otps' && (
-        <OtpScanView
-          status={apiStatus}
-          refreshApiStatus={refreshApiStatus}
+        <OnetrickGamesView
+          games={meta?.games ?? []}
+          gamesLoading={metaLoading}
+          championNames={championNames}
+          championFiles={championFiles}
           itemCatalog={itemCatalog}
-          runeCatalog={runeCatalog}
-          patch={patch}
-          scan={scan}
-          busy={busy}
-          apiReady={apiReady}
-          onScan={scanKorea}
-          tier={tier}
-          setTier={setTier}
-          lane={otpLane}
-          setLane={setOtpLane}
-          scanSort={scanSort}
-          setScanSort={setScanSort}
-          activeOtpCandidates={activeOtpCandidates}
+          champions={champions}
+          ddragonVersion={patch}
+          onScanRoster={() => void runStreamedScan(true, true)}
+          scanningRoster={busy === 'scan'}
         />
       )}
 
@@ -1991,12 +2637,10 @@ function App() {
           patch={patch}
           buildFocus={buildFocus}
           setBuildFocus={setBuildFocus}
-          laneBuild={laneBuild}
-          compBuild={compBuild}
-          activeOpponent={activeOpponent}
-          laneSampleCount={laningSamples.length}
-          compSampleCount={compSamples.length}
-          verifiedCount={verifiedMatches.length}
+          laneOpponent={laneOpponent}
+          laneBuild={recommendedBuild && recommendedBuild.source === 'lane' ? recommendedBuild : null}
+          compBuild={recommendedBuild && recommendedBuild.source === 'comp' ? recommendedBuild : null}
+          loading={recommendedLoading}
         />
       )}
 
@@ -2017,8 +2661,35 @@ function App() {
           busy={busy}
           lobbyAllyIds={lobbyAllyIds}
           lobbyEnemyIds={lobbyEnemyIds}
+          build={draftBuild}
+          buildLoading={draftBuildLoading}
+          itemCatalog={itemCatalog}
+          runeCatalog={runeCatalog}
+          runeNames={runeNames}
+          patch={patch}
         />
       )}
+
+      {view === 'datamanagement' && (
+        <DataManagementView
+          cacheStats={cacheStats}
+          statsLoading={statsLoading}
+          onRefreshStats={refreshCacheStats}
+          scan={scan}
+          progress={scanProgress}
+          busy={busy}
+          onScan={() => void runStreamedScan(false)}
+          onStop={stopScan}
+          onRefresh={() => void runStreamedScan(true)}
+          apiReady={apiReady}
+          clientStatus={clientStatus}
+          championFiles={championFiles}
+          patch={patch}
+          onCacheCleared={handleCacheCleared}
+          onDataChanged={() => void fetchDockBuild(dockLane, dockOpponent)}
+        />
+      )}
+      </ViewErrorBoundary>
 
       <footer className="dashboard-footer">Personal tool · Riot Games is not affiliated with this app.</footer>
     </div>
