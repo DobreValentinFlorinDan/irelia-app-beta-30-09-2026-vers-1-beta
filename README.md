@@ -72,6 +72,7 @@ sweep is not tied to an open window and progress lands in stdout.
 npm run db:build                                     # full 4-region ladder sweep
 npm run db:build -- --roster                         # just the curated OTPs
 npm run db:build -- --skip-scan --deepen 30 --budget 8000
+npm run db:build -- --skip-scan --focus-top 6 --budget 900
 npm run db:validate                                  # report + reference diff
 ```
 
@@ -84,6 +85,11 @@ Useful properties:
   participants, so pulling a timeline for any other game spends budget on data
   nothing reads.
 - **Budgeted.** `--budget` caps how many Riot requests a deepen pass may spend.
+- **Patch-scoped.** Coverage and deepening only count games on the newest patch
+  with data, so older patches can never pad the current-patch targets.
+- **Targeted harvesting.** `--focus-top N` fills the N most-played thin
+  matchups from the opponent mains' side (the `deepenOpponent` path), which
+  finds rare matchups far faster than walking Irelia histories backwards.
 
 Watch the key: a development key expires 24 hours after it is issued, and the
 100-requests-per-2-minutes limit is the real constraint on how fast a sweep runs.

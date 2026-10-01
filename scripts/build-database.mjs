@@ -24,6 +24,11 @@
  *   --roster             deepen only the curated OTP roster, skip the ladders
  *   --deepen <n>         afterwards walk candidates until every matchup has n games
  *   --budget <n>         request cap for the deepen pass          default: 400
+ *   --focus <id>         harvest ONE matchup (opponent champion id) from the
+ *                        opponent mains' side, up to --focus-target games
+ *   --focus-top <n>      harvest the n most-played matchups still under the
+ *                        target; --budget is split evenly across them
+ *   --focus-target <n>   per-matchup goal for focus harvests      default: 30
  *   --skip-scan          don't re-run the ladder scan; deepen using the cached one
  *   --prune <bytes>      afterwards drop the smallest matches while over this size
  *   --quiet              only print phase changes and the final summary
@@ -78,6 +83,13 @@ const deepenTarget = Math.max(numberOption('deepen', 0), 0)
 const deepenBudget = Math.min(Math.max(numberOption('budget', 400), 20), 50_000)
 const pruneBytes = Math.max(numberOption('prune', 0), 0)
 const quiet = flag('quiet')
+// Targeted harvesting: fill one matchup (or the n most-played thin matchups)
+// from the opponent mains' side — far more efficient per game than walking
+// Irelia history backwards.
+const focus = Math.max(numberOption('focus', 0), 0)
+const focusTop = Math.max(numberOption('focus-top', 0), 0)
+const focusTarget = Math.min(Math.max(numberOption('focus-target', 30), 1), 500)
+const focusHarvest = focus > 0 || focusTop > 0
 
 if (!TIERS.includes(tier)) {
   console.error(`[build] --tier must be one of ${TIERS.join(', ')}`)
@@ -205,7 +217,38 @@ if (scan) {
   console.log('[build] --skip-scan: reusing the cached scan snapshot (candidates already known)')
 }
 
-if (deepenTarget > 0) {
+if (focusHarvest) {
+  const before = await riot.computeCoverage(lane, focusTarget)
+  let targets = []
+  if (focus > 0) {
+    targets = [{ opponentChampionId: focus }]
+  } else {
+    // Most-played thin matchups first: those are the ones a player actually
+    // meets, so filling them gives the most visible payoff per request.
+    targets = [...before.matchups]
+      .sort((a, b) => b.games - a.games)
+      .filter((entry) => !entry.covered)
+      .slice(0, focusTop)
+      .map((entry) => ({ opponentChampionId: entry.opponentChampionId }))
+  }
+  if (!targets.length) {
+    console.log('')
+    console.log('[build] no focus targets: every tracked matchup is already covered')
+  } else {
+    const perOpponent = Math.max(20, Math.floor(deepenBudget / targets.length))
+    console.log('')
+    console.log(`[build] focus harvesting ${targets.length} matchup(s) to ${focusTarget} games on patch ${before.patch || 'n/a'} (${deepenBudget} requests total, ${perOpponent} each)`)
+    let totalAdded = 0
+    for (const target of targets) {
+      const name = before.matchups.find((m) => m.opponentChampionId === target.opponentChampionId)?.opponentName ?? `#${target.opponentChampionId}`
+      console.log(`[build]   harvesting vs ${name}…`)
+      const result = await riot.deepenOpponent(target.opponentChampionId, lane, focusTarget, report, { maxRequests: perOpponent })
+      totalAdded += result.matchesAdded
+      console.log(`[build]   vs ${name}: +${result.matchesAdded} games (now ${result.gamesNow}) · ${result.requestsUsed} requests · ${result.stopReason}`)
+    }
+    console.log(`[build]   total added across all focuses: ${totalAdded}`)
+  }
+} else if (deepenTarget > 0) {
   console.log('')
   console.log(`[build] deepening matchups to ${deepenTarget} games (budget ${deepenBudget} requests)…`)
   const deepened = await riot.deepenMatchups(lane, deepenTarget, report, { maxRequests: deepenBudget })
@@ -223,10 +266,12 @@ if (pruneBytes > 0) {
 }
 
 // Coverage is the honest progress measure: how many lane opponents have enough
-// games to say anything about.
-const coverage = await riot.computeCoverage(lane, 30)
+// games to say anything about. It is patch-scoped, so the numbers describe the
+// current patch rather than every patch on disk.
+const coverageTarget = focusHarvest ? focusTarget : (deepenTarget > 0 ? deepenTarget : 30)
+const coverage = await riot.computeCoverage(lane, coverageTarget)
 console.log('')
-console.log(`[build] coverage (target 30 games per opponent)`)
+console.log(`[build] coverage (patch ${coverage.patch || 'n/a'}, target ${coverageTarget} games per opponent)`)
 console.log(`[build]   opponents tracked  : ${coverage.totalCount}`)
 console.log(`[build]   covered            : ${coverage.coveredCount}`)
 console.log(`[build]   games still needed : ${coverage.gamesNeeded}`)

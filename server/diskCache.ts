@@ -62,6 +62,15 @@ export async function hasCache(bucket: string, key: string) {
   return existsSync(entryPath(bucket, key))
 }
 
+/** Last-modified epoch-ms of a cached entry, or null when it does not exist. */
+export async function cacheEntryMtime(bucket: string, key: string): Promise<number | null> {
+  try {
+    return (await stat(entryPath(bucket, key))).mtimeMs
+  } catch {
+    return null
+  }
+}
+
 /** Lists the cache keys (without the .json extension) stored in a bucket. */
 export async function listCacheKeys(bucket: string): Promise<string[]> {
   try {

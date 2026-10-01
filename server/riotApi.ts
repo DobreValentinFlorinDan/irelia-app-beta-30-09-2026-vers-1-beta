@@ -20,7 +20,7 @@ import type {
   ProgressReporter,
   Routing as EngineRouting,
 } from './buildEngine.js'
-import { cacheDirectory, cacheSize, clearCache, deleteCache, hasCache, listCacheKeys, readCache, writeCache } from './diskCache.js'
+import { cacheDirectory, cacheEntryMtime, cacheSize, clearCache, deleteCache, hasCache, listCacheKeys, readCache, writeCache } from './diskCache.js'
 import {
   analyseSkillOrder,
   matchWeight,
@@ -474,6 +474,8 @@ export type CoverageEntry = {
 
 export type CoverageReport = {
   lane: OtpRole | null
+  /** The patch the counts below are restricted to — the newest patch with data. */
+  patch: string
   target: number
   matchups: CoverageEntry[]
   coveredCount: number
@@ -482,10 +484,20 @@ export type CoverageReport = {
   gamesNeeded: number
 }
 
-/** How many cached Irelia games exist per lane opponent, against a target. */
+/**
+ * How many cached Irelia games exist per lane opponent, against a target.
+ *
+ * Counts only games on the newest patch with data. Coverage exists to drive
+ * *current* build evidence, so counting stale patches would both overstate the
+ * pool and invite the deepen walk to fill the target with ancient games.
+ */
 export async function computeCoverage(lane: OtpRole | null, target: number): Promise<CoverageReport> {
   const matches = await loadCacheWideIreliaMatches()
-  const scoped = lane ? matches.filter((match) => match.position === lane) : matches
+  const patch = mostRecentPatch(matches)
+  const scoped = matches.filter((match) =>
+    (!patch || match.patch === patch)
+    && (lane === null || match.position === lane),
+  )
   const counts = new Map<number, number>()
   scoped.forEach((match) => {
     if (!match.opponentChampionId) return
@@ -505,6 +517,7 @@ export async function computeCoverage(lane: OtpRole | null, target: number): Pro
 
   return {
     lane,
+    patch,
     target,
     matchups,
     coveredCount: matchups.filter((entry) => entry.covered).length,
@@ -622,6 +635,9 @@ export async function deepenOpponent(
         if (!irelia) continue
         const ireliaPosition = getPlayerPosition(irelia)
         if (lane && ireliaPosition !== lane) continue
+        // Patch guard: same rule as deepenMatchups — only games on the patch
+        // coverage is measuring may count toward the target.
+        if (coverage.patch && String(match.info.gameVersion ?? '').split('.').slice(0, 2).join('.') !== coverage.patch) continue
         const faced = match.info.participants.find((entry) => entry.championId === opponentChampionId && getPlayerPosition(entry) === ireliaPosition)
         if (!faced) continue
 
@@ -800,6 +816,10 @@ export async function deepenMatchups(
         if (!player || player.championId !== IRELIA_ID) continue
         const position = getPlayerPosition(player)
         if (lane && position !== lane) continue
+        // Patch guard: coverage only measures the newest patch with data, so a
+        // stale-patch game must not fill its target. Skipping it here keeps the
+        // walk from re-polluting a clean cache with ancient evidence.
+        if (coverage.patch && String(match.info.gameVersion ?? '').split('.').slice(0, 2).join('.') !== coverage.patch) continue
 
         const opponent = match.info.participants.find((entry) => entry.puuid !== candidate.puuid && getPlayerPosition(entry) === position)
         const opponentChampionId = opponent?.championId
@@ -1088,7 +1108,26 @@ export type ScanResult = {
   note: string
 }
 
-const latestScanByKey = new Map<string, ScanResult>()
+/**
+ * In-process memo of the last-scanned snapshot, keyed by the snapshot file's
+ * mtime. The builder script runs in its own process and rewrites the snapshot
+ * on disk, so a server that memoised the value forever would keep serving a
+ * stale scan until restarted. The mtime key makes the next request after a
+ * rebuild serve the new snapshot while skipping the (multi-megabyte) disk read
+ * in between.
+ */
+const scanSnapshotMemo = new Map<string, { mtime: number; value: ScanResult }>()
+
+async function getStoredScan(): Promise<ScanResult | null> {
+  const pointer = await readCache<{ key: string; scannedAt: number }>('scans', 'latest')
+  if (!pointer) return null
+  const mtime = (await cacheEntryMtime('scans', pointer.key)) ?? 0
+  const memo = scanSnapshotMemo.get(pointer.key)
+  if (memo && memo.mtime === mtime) return memo.value
+  const stored = await readCache<ScanResult>('scans', pointer.key)
+  if (stored) scanSnapshotMemo.set(pointer.key, { mtime, value: stored })
+  return stored
+}
 
 function scanCacheKey(tier: OtpTier, lane: OtpRole | null, regions: ScanRegion[]) {
   return `${regions.join('+')}:${tier}:${lane ?? 'ALL'}`
@@ -1440,21 +1479,12 @@ export async function runKoreanScan(
   }
 
   await flushIreliaIndex()
-  latestScanByKey.set(scanCacheKey(tier, lane, activeRegions), result)
   await writeCache('scans', scanCacheKey(tier, lane, activeRegions), result)
   if (lane === null) {
     await writeCache('scans', 'latest', { key: scanCacheKey(tier, lane, activeRegions), scannedAt: result.scannedAt })
   }
   report({ phase: 'done', message: `Scan complete · ${laneFiltered.length} active mains · ${cacheHits} cached matches reused`, done: totalScanSlots, total: totalScanSlots })
   return result
-}
-
-async function loadStoredScan(): Promise<ScanResult | null> {
-  const pointer = await readCache<{ key: string; scannedAt: number }>('scans', 'latest')
-  if (!pointer) return null
-  const stored = await readCache<ScanResult>('scans', pointer.key)
-  if (stored) latestScanByKey.set(pointer.key, stored)
-  return stored
 }
 
 /* ------------------------------------------------------------------ *
@@ -1510,7 +1540,7 @@ function collectVerifiedMatches(scan: ScanResult | null, lane: OtpRole) {
 }
 
 export async function buildRecommendation(patch: string, request: BuildRequest): Promise<BuildResponse> {
-  const scan = latestScanByKey.get(scanCacheKey('all', null, defaultScanRegions)) ?? await loadStoredScan()
+  const scan = await getStoredScan()
   const lane = request.lane
 
   // Two independent sources of evidence, and both are genuinely useful:
@@ -1667,9 +1697,6 @@ export type MetaResponse = {
   games: MetaGame[]
 }
 
-/** Memoised in-process; the disk index below is the durable layer. */
-let metaBanMemo: { banRate: ConfidenceInterval; games: number } | null = null
-
 const BAN_INDEX_KEY = 'ban-index'
 const BAN_INDEX_TTL_MS = 12 * 60 * 60 * 1_000
 
@@ -1684,16 +1711,14 @@ type BanIndexFile = { games: number; banned: number; updatedAt: number }
  * Riot uses championId -1 as the "no ban" placeholder, so those entries must be
  * excluded or bans get counted that never happened.
  *
- * Scanning the full matches bucket is expensive, so the result is persisted and
- * refreshed on a TTL rather than on every request.
+ * The disk index is re-read on every request — it is a tiny file — so a
+ * headless rebuild is reflected immediately. Only the expensive full-cache walk
+ * is gated by the TTL.
  */
 async function sampledBanRate(): Promise<{ banRate: ConfidenceInterval; games: number }> {
-  if (metaBanMemo) return metaBanMemo
-
   const stored = await readCache<BanIndexFile>('scans', BAN_INDEX_KEY)
   if (stored && Date.now() - stored.updatedAt < BAN_INDEX_TTL_MS && stored.games > 0) {
-    metaBanMemo = { banRate: wilsonInterval(stored.banned, stored.games), games: stored.games }
-    return metaBanMemo
+    return { banRate: wilsonInterval(stored.banned, stored.games), games: stored.games }
   }
 
   const keys = await listCacheKeys('matches')
@@ -1711,9 +1736,9 @@ async function sampledBanRate(): Promise<{ banRate: ConfidenceInterval; games: n
     if (isBanned) banned += 1
   }
 
-  metaBanMemo = { banRate: wilsonInterval(banned, games), games }
+  const result = { banRate: wilsonInterval(banned, games), games }
   await writeCache('scans', BAN_INDEX_KEY, { games, banned, updatedAt: Date.now() } satisfies BanIndexFile)
-  return metaBanMemo
+  return result
 }
 
 /** The game patch most of the given matches were played on. */
@@ -2222,7 +2247,7 @@ export async function handleApiRequest(request: IncomingMessage, response: Serve
 
   // Saved scan snapshot (instant, offline-friendly).
   if (url.pathname === '/riot/scan') {
-    const scan = latestScanByKey.get(scanCacheKey('all', null, defaultScanRegions)) ?? await loadStoredScan()
+    const scan = await getStoredScan()
     sendJson(response, 200, { scan })
     return
   }
@@ -2456,8 +2481,7 @@ export async function handleApiRequest(request: IncomingMessage, response: Serve
   if (url.pathname === '/riot/kr-scan') {
     const params = parseScanParams(url)
     if (!params.force) {
-      const snapshot = latestScanByKey.get(scanCacheKey(params.tier, params.lane, params.regions))
-        ?? await readScanFromDisk(params.tier, params.lane, params.regions)
+      const snapshot = await readScanFromDisk(params.tier, params.lane, params.regions)
       if (snapshot) {
         sendJson(response, 200, { ...snapshot, fromCache: true })
         return
