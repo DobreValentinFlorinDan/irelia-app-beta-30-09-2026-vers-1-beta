@@ -29,6 +29,8 @@
  *   --focus-top <n>      harvest the n most-played matchups still under the
  *                        target; --budget is split evenly across them
  *   --focus-target <n>   per-matchup goal for focus harvests      default: 30
+ *   --otp <Name#TAG>     harvest ONE player's history back through the current
+ *                        patch (OTP of choice); --otp-region KR|EUW|EUNE|NA
  *   --skip-scan          don't re-run the ladder scan; deepen using the cached one
  *   --prune <bytes>      afterwards drop the smallest matches while over this size
  *   --quiet              only print phase changes and the final summary
@@ -90,6 +92,9 @@ const focus = Math.max(numberOption('focus', 0), 0)
 const focusTop = Math.max(numberOption('focus-top', 0), 0)
 const focusTarget = Math.min(Math.max(numberOption('focus-target', 30), 1), 500)
 const focusHarvest = focus > 0 || focusTop > 0
+// OTP of choice: walk ONE player's history back through the current patch.
+const otpRiotId = String(option('otp', '')).trim()
+const otpRegion = String(option('otp-region', 'KR')).toUpperCase()
 
 if (!TIERS.includes(tier)) {
   console.error(`[build] --tier must be one of ${TIERS.join(', ')}`)
@@ -217,7 +222,21 @@ if (scan) {
   console.log('[build] --skip-scan: reusing the cached scan snapshot (candidates already known)')
 }
 
-if (focusHarvest) {
+if (otpRiotId) {
+  const separator = otpRiotId.lastIndexOf('#')
+  const gameName = separator > 0 ? otpRiotId.slice(0, separator).trim() : ''
+  const tagLine = separator > 0 ? otpRiotId.slice(separator + 1).trim() : ''
+  if (!gameName || !tagLine || !REGIONS.includes(otpRegion)) {
+    console.error('[build] --otp must be "Name#TAG" and --otp-region one of KR,EUW,EUNE,NA')
+    process.exit(2)
+  }
+  console.log('')
+  console.log(`[build] harvesting OTP of choice ${gameName}#${tagLine} (${otpRegion}) through the current patch…`)
+  const otp = await riot.harvestPlayer(gameName, tagLine, otpRegion, report, { maxRequests: Math.min(deepenBudget, 800) })
+  console.log(`[build]   patch         : ${otp.patch}`)
+  console.log(`[build]   games walked  : ${otp.games}  (${otp.ireliaGames} on Irelia)`)
+  console.log(`[build]   new bodies    : ${otp.matchesAdded}  requests: ${otp.requestsUsed}  stop: ${otp.stopReason}`)
+} else if (focusHarvest) {
   const before = await riot.computeCoverage(lane, focusTarget)
   let targets = []
   if (focus > 0) {

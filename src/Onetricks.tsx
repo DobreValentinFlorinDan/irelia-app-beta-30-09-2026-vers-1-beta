@@ -951,6 +951,138 @@ function RecentGames({
 }
 
 /* ------------------------------------------------------------------ *
+ * OTP of choice: deep-history comparison against everyone else
+ * ------------------------------------------------------------------ */
+
+type OtpSlotOptionData = {
+  id: number
+  games: number
+  share: number
+  winRate: number
+  otpRate: number
+  agreement: boolean
+  score: number
+}
+
+type OtpBuildLite = {
+  games: number
+  winRate: number
+  slots: Array<{ slot: number; options: Array<{ id: number; games: number; share: number; winRate: number }> }>
+}
+
+type OtpCompareData = {
+  patch: string
+  otp: { riotId: string; games: number; winRate: number; slots: OtpBuildLite['slots']; byOpponent: Record<string, OtpBuildLite> }
+  baseline: { games: number; winRate: number; byOpponent: Record<string, OtpBuildLite> }
+  previous: { riotId: string; patch: string; ireliaGames: number } | null
+  slots: Array<{ slot: number; bestId: number | null; options: OtpSlotOptionData[] }>
+}
+
+function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragonVersion }: {
+  itemCatalog: Map<number, ItemInfo>
+  championNames: Map<number, string>
+  championFiles: Map<number, string>
+  ddragonVersion: string
+}) {
+  const [data, setData] = useState<OtpCompareData | null>(null)
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void fetch('/api/riot/otp-compare?lane=TOP')
+      .then((response) => {
+        if (!response.ok) throw new Error(String(response.status))
+        return response.json()
+      })
+      .then((json: OtpCompareData) => { if (!cancelled) setData(json) })
+      .catch(() => { if (!cancelled) setData(null) })
+      .finally(() => { if (!cancelled) setLoaded(true) })
+    return () => { cancelled = true }
+  }, [])
+
+  if (!loaded || !data) return null
+
+  const itemName = (id: number) => itemCatalog.get(id)?.name ?? `Item ${id}`
+  const otpSlotPick = (slot: number) => data.otp.slots.find((entry) => entry.slot === slot)?.options[0] ?? null
+  const opponents = Object.keys(data.baseline.byOpponent)
+    .filter((key) => data.otp.byOpponent[key])
+    .sort((a, b) => data.otp.byOpponent[b].games - data.otp.byOpponent[a].games)
+
+  return (
+    <section className="ot-card">
+      <div className="ot-card-head">
+        <h3>OTP of choice · {data.otp.riotId}</h3>
+        <div className="ot-head-right"><span className="ot-ci">patch {data.patch}</span></div>
+      </div>
+      <p className="ot-caveat">
+        {data.otp.games} of his Irelia games vs the field&apos;s {data.baseline.games} (his own excluded).
+        Win rate {pct0(data.otp.winRate)} vs {pct0(data.baseline.winRate)}. Where his item order agrees with
+        the field, the consensus pick&apos;s score is boosted.
+      </p>
+
+      <div className="ot-subhead">General build path order</div>
+      <div className="ot-item-list">
+        {data.slots.map((slot) => {
+          const his = otpSlotPick(slot.slot)
+          const best = slot.options[0]
+          return (
+            <div className="ot-item-row" key={slot.slot}>
+              <span className="ot-row-name">Slot {slot.slot}</span>
+              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+                {his ? <ItemIcon id={his.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+                <span className="ot-row-games" title={`He takes ${itemName(his?.id ?? 0)} ${his ? pct0(his.share) : '—'} of the time`}>
+                  {his ? pct0(his.share) : '—'}
+                </span>
+              </span>
+              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+                <ItemIcon id={best.id} size={25} catalog={itemCatalog} version={ddragonVersion} />
+                <span className="ot-row-games" title={`${itemName(best.id)} · field share ${pct0(best.share)} · consensus score ${best.score.toFixed(3)}`}>
+                  {best.agreement ? '✓ consensus' : 'field pick'}
+                </span>
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="ot-subhead">Head-to-head build order</div>
+      {opponents.length === 0 && <p className="ot-empty">No shared matchups with the field yet.</p>}
+      {opponents.slice(0, 12).map((key) => {
+        const id = Number(key)
+        const his = data.otp.byOpponent[key]
+        const field = data.baseline.byOpponent[key]
+        const hisFirst = his.slots?.[0]?.options[0] ?? null
+        const fieldFirst = field.slots?.[0]?.options[0] ?? null
+        return (
+          <div className="ot-item-row" key={key}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <ChampionIcon id={id} size={24} names={championNames} files={championFiles} version={ddragonVersion} />
+              <span className="ot-row-name">{championNames.get(id) ?? `#${id}`}</span>
+              <span className="ot-row-games">{his.games} vs {field.games} games</span>
+            </span>
+            <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+              {hisFirst ? <ItemIcon id={hisFirst.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+              <span className="ot-row-games" title={`His first item: ${itemName(hisFirst?.id ?? 0)}`}>his</span>
+            </span>
+            <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+              {fieldFirst ? <ItemIcon id={fieldFirst.id} size={25} catalog={itemCatalog} version={ddragonVersion} /> : null}
+              <span className="ot-row-games" title={`Field first item: ${itemName(fieldFirst?.id ?? 0)}`}>field</span>
+            </span>
+          </div>
+        )
+      })}
+
+      {data.previous && (
+        <p className="ot-caveat">
+          Archive: {data.previous.riotId} · patch {data.previous.patch} · {data.previous.ireliaGames} Irelia
+          games — kept for the stack-over-time comparison.
+        </p>
+      )}
+    </section>
+  )
+}
+
+/* ------------------------------------------------------------------ *
  * View
  * ------------------------------------------------------------------ */
 
@@ -1144,6 +1276,13 @@ export default function OnetricksView({
           </p>
         </>
       )}
+
+      <OtpComparisonPanel
+        itemCatalog={itemCatalog}
+        championNames={championNames}
+        championFiles={championFiles}
+        ddragonVersion={ddragonVersion}
+      />
     </div>
   )
 }

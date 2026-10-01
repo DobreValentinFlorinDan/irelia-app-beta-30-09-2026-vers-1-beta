@@ -1451,6 +1451,16 @@ type CoverageReport = {
   gamesNeeded: number
 }
 
+type OtpProfileSummary = {
+  riotId: string
+  puuid: string
+  region: string
+  harvestedAt: number
+  patch: string
+  games: number
+  ireliaGames: number
+}
+
 type DeepenOutcome = {
   coverage: CoverageReport
   matchesAdded: number
@@ -1638,6 +1648,78 @@ function DataManagementView({
       setDeepening(false)
       setDeepenSource(null)
       setDeepenProgress(null)
+      source.close()
+    }
+  }
+
+  // OTP of choice: walk one named player's history back through the current
+  // patch and keep the profile for the Stats comparison. Replacing the OTP
+  // keeps the previous profile in the archive.
+  const [otpInput, setOtpInput] = useState('')
+  const [otpRegion, setOtpRegion] = useState<'KR' | 'EUW' | 'EUNE' | 'NA'>('KR')
+  const [otpHarvesting, setOtpHarvesting] = useState(false)
+  const [otpProgress, setOtpProgress] = useState<ScanProgress | null>(null)
+  const [otpMessage, setOtpMessage] = useState('')
+  const [otpState, setOtpState] = useState<{ active: { puuid: string; riotId: string; savedAt: number } | null; profiles: OtpProfileSummary[] } | null>(null)
+  const [otpSource, setOtpSource] = useState<EventSource | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void apiGet<{ active: { puuid: string; riotId: string; savedAt: number } | null; profiles: OtpProfileSummary[] }>('/api/riot/otp-profile')
+      .then((data) => { if (!cancelled) setOtpState(data) })
+      .catch(() => { if (!cancelled) setOtpState(null) })
+    return () => { cancelled = true }
+  }, [refreshTick])
+
+  useEffect(() => () => { otpSource?.close() }, [otpSource])
+
+  function startOtpHarvest() {
+    const raw = otpInput.trim()
+    const separator = raw.lastIndexOf('#')
+    const gameName = separator > 0 ? raw.slice(0, separator).trim() : ''
+    const tagLine = separator > 0 ? raw.slice(separator + 1).trim() : ''
+    if (!gameName || !tagLine) {
+      setOtpMessage('Give the OTP as Name#TAG, e.g. IRELKING#0729.')
+      return
+    }
+    setOtpHarvesting(true)
+    setOtpMessage('')
+    setOtpProgress({ phase: 'otp', message: 'Resolving Riot ID…', done: 0, total: 0 })
+    const source = new EventSource(`/api/riot/otp-harvest-stream?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}&region=${otpRegion}&budget=800`)
+    setOtpSource(source)
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as
+          | { type: 'progress'; phase: string; message: string; done: number; total: number }
+          | { type: 'result'; result: { riotId: string; patch: string; games: number; ireliaGames: number; requestsUsed: number; stopReason: string } }
+          | { type: 'error'; message: string }
+        if (payload.type === 'progress') {
+          setOtpProgress({ phase: payload.phase, message: payload.message, done: payload.done, total: payload.total })
+        } else if (payload.type === 'result') {
+          setOtpHarvesting(false)
+          setOtpProgress(null)
+          setOtpSource(null)
+          setOtpMessage(`Harvested ${payload.result.riotId}: ${payload.result.games} games on patch ${payload.result.patch} (${payload.result.ireliaGames} on Irelia) · stopped at the patch boundary.`)
+          source.close()
+          void apiGet<{ active: { puuid: string; riotId: string; savedAt: number } | null; profiles: OtpProfileSummary[] }>('/api/riot/otp-profile')
+            .then((data) => setOtpState(data))
+            .catch(() => {})
+          onDataChanged()
+        } else if (payload.type === 'error') {
+          setOtpHarvesting(false)
+          setOtpProgress(null)
+          setOtpSource(null)
+          setOtpMessage(payload.message)
+          source.close()
+        }
+      } catch {
+        // Keep-alive frames are not JSON.
+      }
+    }
+    source.onerror = () => {
+      setOtpHarvesting(false)
+      setOtpProgress(null)
+      setOtpSource(null)
       source.close()
     }
   }
@@ -1858,6 +1940,69 @@ function DataManagementView({
               )
             })}
           </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">OTP of choice</p>
+            <h2>Source a player&apos;s history</h2>
+          </div>
+        </div>
+        <p className="microcopy">
+          Walk one Irelia main&apos;s ranked history back through the current patch — the deep, consistent
+          evidence the scan&apos;s 40-game windows can&apos;t reach. Stops automatically at the first page of
+          older-patch games, so the data never goes stale.
+        </p>
+        <div className="account-form">
+          <label>
+            <span>Riot ID (Name#TAG)</span>
+            <input
+              value={otpInput}
+              onChange={(event) => setOtpInput(event.target.value)}
+              placeholder="IRELKING#0729"
+              disabled={otpHarvesting}
+            />
+          </label>
+          <label>
+            <span>Region</span>
+            <select
+              value={otpRegion}
+              onChange={(event) => setOtpRegion(event.target.value as 'KR' | 'EUW' | 'EUNE' | 'NA')}
+              disabled={otpHarvesting}
+            >
+              <option value="KR">KR</option>
+              <option value="EUW">EUW</option>
+              <option value="EUNE">EUNE</option>
+              <option value="NA">NA</option>
+            </select>
+          </label>
+        </div>
+        <div className="action-grid">
+          <div className="action-item">
+            <button type="button" className="action-button" onClick={startOtpHarvest} disabled={!apiReady || otpHarvesting}>
+              {otpHarvesting ? 'Walking history…' : 'Source OTP history'}
+            </button>
+            <p className="action-note">
+              Budgeted at 800 requests. Replace the OTP anytime — the previous profile stays in the archive
+              for the Stats comparison.
+            </p>
+          </div>
+        </div>
+        {otpProgress && <ScanProgressBar progress={otpProgress} busy={otpHarvesting} />}
+        {otpMessage && <p className="caveat">{otpMessage}</p>}
+        {otpState?.active && otpState.profiles.length > 0 && (
+          <div className="stat-row">
+            <div className="stat-cell"><span>Active OTP</span><strong>{otpState.active.riotId}</strong></div>
+            <div className="stat-cell"><span>Patch</span><strong>{otpState.profiles[0].patch}</strong></div>
+            <div className="stat-cell"><span>Games (Irelia)</span><strong>{otpState.profiles[0].ireliaGames} / {otpState.profiles[0].games}</strong></div>
+          </div>
+        )}
+        {otpState && otpState.profiles.length > 1 && (
+          <p className="microcopy">
+            Archive: {otpState.profiles.slice(1).map((profile) => `${profile.riotId} · patch ${profile.patch} · ${profile.ireliaGames} Irelia games`).join(' | ')}
+          </p>
         )}
       </section>
 
