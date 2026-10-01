@@ -1923,12 +1923,33 @@ async function getStaticData(): Promise<StaticData> {
   const cached = staticDataCache.get(cacheKey)
   if (cached && cached.expiresAt > Date.now()) return cached.value
 
-  // Persist across restarts so a cold boot does not always re-hit Data Dragon.
+  // Persist across restarts so a cold boot does not always re-hit Data Dragon —
+  // but only trust the persisted payload while it matches the newest Data Dragon
+  // version. The version moves on patch day, and this re-check (one tiny,
+  // unthrottled versions.json fetch per cold boot) lets the catalog refresh
+  // itself instead of needing a manual cache wipe.
   if (!cached) {
-    const onDisk = await readCache<{ value: StaticData }>('scans', cacheKey)
-    if (onDisk?.value?.version) {
-      staticDataCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1_000, value: onDisk.value })
-      return onDisk.value
+    const onDisk = await readCache<{ value: StaticData; savedAt?: number }>('scans', cacheKey)
+    try {
+      const versionsResponse = await fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+      if (versionsResponse.ok) {
+        const versions = (await versionsResponse.json()) as string[]
+        if (onDisk?.value?.version && versions[0] === onDisk.value.version) {
+          // Still the current patch: reuse the persisted payload.
+          await writeCache('scans', cacheKey, { value: onDisk.value, savedAt: Date.now() })
+          staticDataCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1_000, value: onDisk.value })
+          return onDisk.value
+        }
+      }
+      // The version moved on (or the check failed): fall through and refetch
+      // the full payload below.
+    } catch {
+      // Data Dragon unreachable: keep serving the cached payload rather than
+      // breaking item icons and champion data entirely.
+      if (onDisk?.value?.version) {
+        staticDataCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1_000, value: onDisk.value })
+        return onDisk.value
+      }
     }
   }
 
