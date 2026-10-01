@@ -10,8 +10,26 @@ A personal, local-only research tool for playing Irelia in League of Legends. It
 - **Find Irelia one-tricks** — scans a bounded sample of the KR Challenger / Grandmaster / Master ladder, verifies TOP/MID Irelia specialists, and shows their builds, runes, keystones, and lane opponents.
 - **Draft composition** — plan a mock draft manually, or read your live champion select straight from the local League Client.
 - **Build and rune evidence** — aggregates the verified Korean OTP games into lane-route and composition-based item, rune, and purchase-order evidence for the current patch.
+- **Build Calculator** — a mathematical build solver: scores every Summoner's Rift item against Irelia's kit (live ability formulas, base stats, passive) for a configurable fight scenario, then beam-searches the best 6-item builds under your constraints (budget, boots, locked/banned items, target stats). Cached OTP pick rates blend into the ranking through an evidence slider.
 
 Build frequencies and win rates shown are **observational**, not a guarantee of an optimal build.
+
+### Build Calculator data sources
+
+- **Kit + items always track the newest patch.** On every server start the app
+  re-checks the newest Data Dragon version and refetches when the patch moved.
+  Ability *damage numbers* no longer ship in Data Dragon, so the kit resolver
+  also reads the same patch's CommunityDragon game data (`irelia.bin.json`) and
+  parses the actual damage formulas; if that mirror is unreachable or its
+  schema changes, the tab degrades to stats-only with a clear banner instead of
+  computing with wrong numbers. (`/api/calculator/kit`, disk-cached as
+  `cache/scans/irelia-kit-v1.json`; items come from `/api/champions`.)
+- **Evidence** comes from the local scan cache via the existing
+  `/api/riot/build` endpoint; with no cached games the calculator still works
+  purely on the model and says so.
+- The model is documented in `src/calculator.ts` (log-relative scoring over the
+  naked champion, approximated named passives). `scripts/test-calculator.mjs`
+  runs the optimizer headlessly against the local server for a sanity check.
 
 ## Local setup
 1. Run `npm install`.

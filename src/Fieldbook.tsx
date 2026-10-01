@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import './App.css'
 import OnetricksView, { OnetrickGamesView, MATCHUP_TARGET, POOL_TARGET } from './Onetricks.tsx'
 import type { ConfidenceInterval, GameRow, ClientStatus } from './Onetricks.tsx'
+import BuildCalculator from './BuildCalculator.tsx'
 
 type Routing = 'EUROPE' | 'ASIA' | 'KR' | 'EUN1' | 'AMERICAS' | 'EUW1' | 'NA1'
 type ScanRegion = 'KR' | 'EUW' | 'EUNE' | 'NA'
@@ -36,10 +37,13 @@ type ItemInfo = {
   image: string
   stats: Record<string, number>
   gold: number
+  description?: string
+  purchasable?: boolean
+  tags?: string[]
 }
 type StaticCatalog = { version: string; champions: Champion[]; items: ItemInfo[]; runes: NamedId[] }
 type DraftMode = 'mock' | 'live'
-type ViewName = 'onetricks' | 'dock' | 'dashboard' | 'otps' | 'build' | 'draft' | 'champselect' | 'datamanagement' | 'widget'
+type ViewName = 'onetricks' | 'dock' | 'dashboard' | 'otps' | 'build' | 'draft' | 'champselect' | 'datamanagement' | 'widget' | 'calculator'
 type OtpLane = 'TOP' | 'MID'
 type Tier = 'all' | 'challenger' | 'grandmaster' | 'master' | 'emerald'
 const emptyChampions: Champion[] = []
@@ -2617,6 +2621,7 @@ function App() {
   const apiReady = Boolean(apiStatus?.configured)
   const navItems: Array<{ id: ViewName; label: string; badge?: number }> = [
     { id: 'onetricks', label: 'Stats' },
+    { id: 'calculator', label: 'Build Calculator' },
     { id: 'datamanagement', label: 'Data' },
     { id: 'otps', label: 'Onetrick', badge: scan ? activeOtpCandidates.length : undefined },
   ]
@@ -2858,6 +2863,10 @@ function App() {
           onCacheCleared={handleCacheCleared}
           onDataChanged={() => void fetchDockBuild(dockLane, dockOpponent)}
         />
+      )}
+
+      {view === 'calculator' && (
+        <BuildCalculator itemCatalog={itemCatalog} patch={patch} />
       )}
       </ViewErrorBoundary>
 

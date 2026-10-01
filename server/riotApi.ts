@@ -1232,7 +1232,7 @@ export async function compareOtpToBaseline(lane: OtpRole, opponent: number | nul
  */
 export async function deepenOtpMatchup(
   opponentId: number,
-  lane: OtpRole,
+  _lane: OtpRole,
   report: ProgressReporter,
   options: { maxRequests?: number } = {},
 ): Promise<OtpFillResult> {
@@ -2339,6 +2339,8 @@ export type StaticItem = {
   gold: number
   purchasable: boolean
   maps: Record<string, boolean>
+  /** Data Dragon item classes: Boots, Trinket, Consumable, Jungle, Lane… */
+  tags: string[]
 }
 
 /** A rune tree (`isTree`) or one rune within a tree. */
@@ -2357,9 +2359,9 @@ const staticDataCache = new Map<string, { expiresAt: number; value: StaticData }
 async function getStaticData(): Promise<StaticData> {
   // Versioned key: the cached payload is trusted wholesale on a cold boot, so a
   // shape change (champions gained `ddragonId`) must invalidate it. Bump this
-  // whenever the returned object's shape changes. v3: non-purchasable SR items
-  // (quest rewards, elixirs) are now included so their icons render.
-  const cacheKey = 'static-data-v3'
+  // whenever the returned object's shape changes. v4: items gained `tags` (the
+  // Build Calculator filters Boots/Trinket/Consumable/Jungle classes by them).
+  const cacheKey = 'static-data-v4'
   const cached = staticDataCache.get(cacheKey)
   if (cached && cached.expiresAt > Date.now()) return cached.value
 
@@ -2420,6 +2422,7 @@ async function getStaticData(): Promise<StaticData> {
         stats: Record<string, number>
         gold: { total: number; purchasable: boolean }
         maps: Record<string, boolean>
+        tags: string[]
       }>
     },
     Array<{
@@ -2448,6 +2451,7 @@ async function getStaticData(): Promise<StaticData> {
         gold: item.gold.total,
         purchasable: item.gold.purchasable,
         maps: item.maps,
+        tags: Array.isArray(item.tags) ? item.tags : [],
       }))
       // Keep every Summoner's Rift item, purchasable or not: non-purchasable
       // items (quest rewards, elixirs like 2152 Elixir of Force) still appear
@@ -2462,6 +2466,370 @@ async function getStaticData(): Promise<StaticData> {
   staticDataCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1_000, value })
   await writeCache('scans', cacheKey, { value, savedAt: Date.now() })
   return value
+}
+
+/* ------------------------------------------------------------------ *
+ * Irelia kit for the Build Calculator
+ * ------------------------------------------------------------------ */
+
+/** One parsed ability, ready for the client damage model. */
+export type KitAbility = {
+  slot: 'Q' | 'W' | 'E' | 'R'
+  name: string
+  description: string
+  /** Base damage per rank; index 0 = rank 1. */
+  baseDamage: number[]
+  /** Total-AD ratio (0 when the ability does not scale with AD). */
+  adRatio: number
+  /** AP ratio (0 when the ability does not scale with AP). */
+  apRatio: number
+  /**
+   * Fully charged damage multiplier for charge abilities (1 otherwise). W's
+   * damage grows by 0%–200% over the first 0.75 s of the channel, so its
+   * maximum is 3× the minimum formula.
+   */
+  chargeMultiplier: number
+  /** Cooldown per rank, seconds. */
+  cooldown: number[]
+  /** Resource cost per rank. */
+  cost: number[]
+  /** Cast range in game units, or null when the cast is not range-bound. */
+  range: number | null
+  maxRank: number
+  damageType: 'physical' | 'magic'
+}
+
+/** Everything the Build Calculator needs about Irelia, per current patch. */
+export type IreliaKit = {
+  version: string
+  fetchedAt: number
+  /** False when the patch-fresh damage numbers could not be parsed. */
+  damageData: boolean
+  baseStats: Record<string, number>
+  growthStats: Record<string, number>
+  attackSpeedBase: number
+  attackSpeedPerLevel: number
+  attackRange: number
+  moveSpeed: number
+  passive: {
+    name: string
+    description: string
+    maxStacks: number
+    /** Bonus attack speed % per stack at level 1 and 18. */
+    attackSpeedPerStack: { level1: number; level18: number }
+    /** On-hit magic damage at level 1 and 18, before the bonus-AD ratio. */
+    onHitDamage: { level1: number; level18: number }
+    /** Bonus-AD ratio on the empowered on-hit. */
+    onHitBonusAdRatio: number
+  }
+  /** W damage reduction: physical at level 1/18, per-100-AP bonus, magic multiplier. */
+  defiantDance: {
+    physicalReduction: { level1: number; level18: number }
+    per100Ap: number
+    magicMultiplier: number
+  } | null
+  /** Q heal as a share of total AD per rank. */
+  healRatio: number[]
+  spells: KitAbility[]
+}
+
+const kitCache = new Map<string, { expiresAt: number; value: IreliaKit }>()
+const KIT_CACHE_KEY = 'irelia-kit-v1'
+
+/* Spell paths inside CommunityDragon's champion bin payload. */
+const CD_SPELL_PATHS = {
+  Q: 'Characters/Irelia/Spells/IreliaQAbility/IreliaQ',
+  W: 'Characters/Irelia/Spells/IreliaWAbility/IreliaW',
+  E: 'Characters/Irelia/Spells/IreliaEAbility/IreliaE',
+  R: 'Characters/Irelia/Spells/IreliaRAbility/IreliaR',
+  PASSIVE: 'Characters/Irelia/Spells/IreliaPassiveAbility/IreliaPassive',
+} as const
+
+type CdSpell = {
+  DataValues?: Array<{ name?: string; values?: number[] }>
+  mSpellCalculations?: Record<string, unknown>
+}
+
+/** Reads a named per-rank DataValue array out of a CD spell, or null. */
+function cdDataValues(spell: CdSpell | null | undefined, name: string): number[] | null {
+  const values = spell?.DataValues?.find((entry) => entry?.name === name)?.values
+  return Array.isArray(values) ? values : null
+}
+
+type DamageCalc = { base: number[]; adRatio: number; apRatio: number }
+
+/**
+ * Parses one mSpellCalculations damage formula into base damage + AD/AP ratios.
+ *
+ * The stat references are decoded empirically against the live game data, cross
+ * checked with the wiki for every Irelia ability:
+ *  - mStat 2 = total attack damage (Q, W AD ratios),
+ *  - missing mStat = ability power (W/E/R AP ratios, W's per-100-AP reduction),
+ *  - mStatFormula 2 switches the referenced AD to *bonus* AD (passive on-hit).
+ */
+function parseDamageCalc(calc: unknown, spell: CdSpell | null | undefined, rankCount: number): DamageCalc {
+  const result: DamageCalc = { base: [], adRatio: 0, apRatio: 0 }
+  const parts = (calc as { mFormulaParts?: unknown[] } | null)?.mFormulaParts
+  if (!Array.isArray(parts)) return result
+  for (const part of parts as Array<Record<string, unknown>>) {
+    const type = String(part?.__type ?? '')
+    if (type === 'NamedDataValueCalculationPart' && typeof part.mDataValue === 'string') {
+      const values = cdDataValues(spell, part.mDataValue)
+      if (values) result.base = values.slice(1, rankCount + 1).map(Number)
+    } else if (type === 'StatByCoefficientCalculationPart') {
+      const coefficient = Number(part.mCoefficient ?? 0)
+      if (Number(part.mStat ?? 0) === 2) {
+        result.adRatio += coefficient
+      } else {
+        result.apRatio += coefficient
+      }
+    } else if (type === 'StatByNamedDataValueCalculationPart' && typeof part.mDataValue === 'string') {
+      const values = cdDataValues(spell, part.mDataValue)
+      const coefficient = values && values.length > 1 ? Number(values[1]) : 0
+      if (Number(part.mStat ?? 0) === 2) {
+        result.adRatio += coefficient
+      } else {
+        result.apRatio += coefficient
+      }
+    }
+  }
+  return result
+}
+
+/** Parses the level interpolation used by the passive and W's damage reduction. */
+function parseLevelInterpolation(calc: unknown): { level1: number; level18: number } | null {
+  const parts = (calc as { mFormulaParts?: unknown[] } | null)?.mFormulaParts
+  if (!Array.isArray(parts)) return null
+  for (const part of parts as Array<Record<string, unknown>>) {
+    if (part?.__type === 'ByCharLevelInterpolationCalculationPart') {
+      return { level1: Number(part.mStartValue ?? 0), level18: Number(part.mEndValue ?? 0) }
+    }
+  }
+  return null
+}
+
+/**
+ * Parses Irelia's kit out of Data Dragon's champion JSON and CommunityDragon's
+ * champion bin payload for the same patch. Data Dragon carries base stats,
+ * cooldowns, costs and ranges; CommunityDragon carries the actual damage
+ * formulas the live client executes.
+ */
+function parseIreliaKit(version: string, ddragon: any, bin: Record<string, any>): IreliaKit {
+  const stats = ddragon?.stats ?? {}
+  const pick = (key: string) => Number(stats[key] ?? 0)
+
+  // The game's own character record carries the authoritative base stats (Data
+  // Dragon reports attackdamageperlevel 0 for Irelia even though her real AD
+  // growth is 3.5). Values are wrapped as { baseValue } ModifiableFloat entries.
+  const rootRecord = bin?.['Characters/Irelia/CharacterRecords/Root'] as Record<string, unknown> | undefined
+  const cdStat = (key: string): number | null => {
+    const entry = rootRecord?.[key]
+    const value = entry && typeof entry === 'object' ? (entry as { baseValue?: unknown }).baseValue : entry
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+  }
+  // CD's regen values are per second; Data Dragon's are per 5 seconds.
+  const regen = (cdKey: string, ddKey: string) => cdStat(cdKey) ?? pick(ddKey) / 5
+
+  const baseStats: Record<string, number> = {
+    hp: cdStat('baseHPModifiable') ?? pick('hp'),
+    mp: pick('mp'), armor: cdStat('baseArmorModifiable') ?? pick('armor'),
+    spellBlock: cdStat('baseMR') ?? pick('spellblock'),
+    attackDamage: cdStat('baseDamageModifiable') ?? pick('attackdamage'),
+    moveSpeed: cdStat('baseMoveSpeedModifiable') ?? pick('movespeed'),
+    hpRegen: regen('baseStaticHPRegenModifiable', 'hpregen'),
+    mpRegen: pick('mpregen') / 5, crit: pick('crit'),
+  }
+  const growthStats: Record<string, number> = {
+    hp: cdStat('hpPerLevelModifiable') ?? pick('hpperlevel'),
+    mp: pick('mpperlevel'), armor: cdStat('armorPerLevelModifiable') ?? pick('armorperlevel'),
+    spellBlock: cdStat('mrPerLevel') ?? pick('spellblockperlevel'),
+    attackDamage: cdStat('damagePerLevelModifiable') ?? pick('attackdamageperlevel'),
+    hpRegen: regen('hpRegenPerLevelModifiable', 'hpregenperlevel'),
+    mpRegen: pick('mpregenperlevel') / 5, crit: pick('critperlevel'),
+  }
+
+  const spells: KitAbility[] = []
+  const byId: Record<string, any> = {}
+  for (const spell of (ddragon?.spells ?? [])) {
+    byId[String(spell?.id ?? '')] = spell
+  }
+
+  function ddragonSpell(id: string) {
+    return byId[id] ?? null
+  }
+
+  const passiveSpell = bin?.[CD_SPELL_PATHS.PASSIVE] as { mSpell?: CdSpell } | undefined
+  const passiveCalc = passiveSpell?.mSpell?.mSpellCalculations ?? {}
+
+  const asInterp = parseLevelInterpolation(passiveCalc['SingleStackAS'])
+  const onHitBase = cdDataValues(passiveSpell?.mSpell, 'OnHitBaseDamage')
+  const onHitPerLevel = cdDataValues(passiveSpell?.mSpell, 'OnHitPerLevel')
+  const maxStacksValues = cdDataValues(passiveSpell?.mSpell, 'MaxStacks')
+  let onHitBonusAdRatio = 0
+  const onHitCalc = passiveCalc['OnHitBonus'] as { mFormulaParts?: unknown[] } | null
+  for (const part of (onHitCalc?.mFormulaParts ?? []) as Array<Record<string, unknown>>) {
+    if (part?.__type === 'StatByCoefficientCalculationPart') {
+      onHitBonusAdRatio += Number(part.mCoefficient ?? 0)
+    }
+  }
+
+  const wSpell = bin?.[CD_SPELL_PATHS.W] as { mSpell?: CdSpell } | undefined
+  const wCalc = wSpell?.mSpell?.mSpellCalculations ?? {}
+  const wPhysDr = parseLevelInterpolation(wCalc['FinalPhysicalDR'])
+  let wPer100Ap = 0
+  for (const part of ((wCalc['FinalPhysicalDR'] as { mFormulaParts?: unknown[] } | null)?.mFormulaParts ?? []) as Array<Record<string, unknown>>) {
+    if (part?.__type === 'StatByCoefficientCalculationPart') wPer100Ap += Number(part.mCoefficient ?? 0) * 100
+  }
+  const wMagicMultiplier = cdDataValues(wSpell?.mSpell, 'MRReductionAmount')?.[0] ?? 0.5
+
+  const abilitySources = [
+    { slot: 'Q' as const, ddId: 'IreliaQ', cd: CD_SPELL_PATHS.Q, calc: 'ChampionDamage', damageType: 'physical' as const },
+    { slot: 'W' as const, ddId: 'IreliaW', cd: CD_SPELL_PATHS.W, calc: 'MinDamageCalc', damageType: 'physical' as const },
+    { slot: 'E' as const, ddId: 'IreliaE', cd: CD_SPELL_PATHS.E, calc: 'TotalDamage', damageType: 'magic' as const },
+    { slot: 'R' as const, ddId: 'IreliaR', cd: CD_SPELL_PATHS.R, calc: 'MissileDamage', damageType: 'magic' as const },
+  ]
+
+  for (const source of abilitySources) {
+    const dd = ddragonSpell(source.ddId)
+    const cdEntry = bin?.[source.cd] as { mSpell?: CdSpell } | undefined
+    const maxRank = Number(dd?.maxrank ?? 5)
+    const parsed = parseDamageCalc(cdEntry?.mSpell?.mSpellCalculations?.[source.calc], cdEntry?.mSpell, maxRank)
+    const cooldown = (dd?.cooldown ?? []).map(Number).slice(0, maxRank)
+    const cost = (dd?.cost ?? []).map(Number).slice(0, maxRank)
+    const ranges = (dd?.range ?? []).map(Number).slice(0, maxRank)
+    const chargeMultiplier = source.slot === 'W'
+      ? 1 + Number(cdDataValues(cdEntry?.mSpell, 'MaxBonusRatio')?.[1] ?? 2)
+      : 1
+    spells.push({
+      slot: source.slot,
+      name: String(dd?.name ?? source.slot),
+      description: String(dd?.description ?? ''),
+      baseDamage: parsed.base,
+      adRatio: parsed.adRatio,
+      apRatio: parsed.apRatio,
+      chargeMultiplier,
+      cooldown,
+      cost,
+      range: ranges.length ? Math.max(...ranges) : null,
+      maxRank,
+      damageType: source.damageType,
+    })
+  }
+
+  // Q heal ratio per rank comes out of the HealAmount calculation.
+  const qSpell = bin?.[CD_SPELL_PATHS.Q] as { mSpell?: CdSpell } | undefined
+  const healValues = cdDataValues(qSpell?.mSpell, 'HealTADCoefficient')
+
+  // Sanity checks against the patch's known kit so a schema change in the
+  // community payload degrades to "no damage data" instead of wrong math.
+  const q = spells[0]
+  const e = spells[2]
+  const r = spells[3]
+  const damageData = Boolean(
+    q && e && r
+    && q.baseDamage.length >= 5 && e.baseDamage.length >= 5 && r.baseDamage.length >= 3
+    && q.baseDamage[0] > 0 && q.baseDamage[0] < 30 // Q rank 1 = 5
+    && q.adRatio >= 0.5 && q.adRatio <= 1.2 // Q = 80% AD
+    && e.baseDamage[0] >= 50 && e.baseDamage[0] <= 100 // E rank 1 = 70
+    && r.baseDamage[0] >= 100 && r.baseDamage[0] <= 200 // R rank 1 = 125
+    && asInterp && onHitBase?.[0] !== undefined && onHitPerLevel?.[0] !== undefined,
+  )
+
+  return {
+    version,
+    fetchedAt: Date.now(),
+    damageData,
+    baseStats,
+    growthStats,
+    attackSpeedBase: cdStat('attackSpeedModifiable') ?? pick('attackspeed'),
+    attackSpeedPerLevel: cdStat('attackSpeedPerLevelModifiable') ?? pick('attackspeedperlevel'),
+    attackRange: cdStat('attackRangeModifiable') ?? pick('attackrange'),
+    moveSpeed: baseStats.moveSpeed,
+    passive: {
+      name: String(ddragon?.passive?.name ?? 'Ionian Fervor'),
+      description: String(ddragon?.passive?.description ?? ''),
+      maxStacks: Number(maxStacksValues?.[1] ?? 4),
+      attackSpeedPerStack: asInterp ?? { level1: 10, level18: 25 },
+      onHitDamage: {
+        level1: Number(onHitBase?.[0] ?? 10),
+        level18: Number(onHitBase?.[0] ?? 10) + Number(onHitPerLevel?.[0] ?? 3) * 17,
+      },
+      onHitBonusAdRatio,
+    },
+    defiantDance: wPhysDr
+      ? { physicalReduction: wPhysDr, per100Ap: wPer100Ap, magicMultiplier: wMagicMultiplier }
+      : null,
+    healRatio: healValues ? healValues.slice(1, 6).map(Number) : [],
+    spells,
+  }
+}
+
+/**
+ * Fetches and parses Irelia's kit for the newest patch, cached in memory and on
+ * disk. Mirrors getStaticData's revalidation: a cold boot re-checks the newest
+ * Data Dragon version and only refetches when the patch moved on, so the kit
+ * (and the calculator's math) always tracks the live patch without hammering
+ * the community mirrors.
+ *
+ * Data Dragon alone cannot supply damage numbers any more (its spell `vars`
+ * arrays ship empty), so the damage formulas come from CommunityDragon's bin
+ * payload for the exact same patch. When that mirror is unreachable or its
+ * schema changes, the kit still serves base stats and cooldowns with
+ * `damageData: false` and the calculator labels itself as degraded.
+ */
+async function getIreliaKit(): Promise<IreliaKit> {
+  const cached = kitCache.get(KIT_CACHE_KEY)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+
+  const onDisk = await readCache<{ value: IreliaKit; savedAt?: number }>('scans', KIT_CACHE_KEY)
+  if (!cached) {
+    try {
+      const versionsResponse = await fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+      if (versionsResponse.ok) {
+        const versions = (await versionsResponse.json()) as string[]
+        if (onDisk?.value?.version && versions[0] === onDisk.value.version && onDisk.value.damageData) {
+          await writeCache('scans', KIT_CACHE_KEY, { value: onDisk.value, savedAt: Date.now() })
+          kitCache.set(KIT_CACHE_KEY, { expiresAt: Date.now() + 5 * 60 * 1_000, value: onDisk.value })
+          return onDisk.value
+        }
+      }
+    } catch {
+      // Mirrors unreachable: serve the cached kit rather than nothing.
+      if (onDisk?.value?.version) {
+        kitCache.set(KIT_CACHE_KEY, { expiresAt: Date.now() + 5 * 60 * 1_000, value: onDisk.value })
+        return onDisk.value
+      }
+    }
+  }
+
+  const versionsResponse = await fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+  if (!versionsResponse.ok) throw new ApiError('Could not load the latest game data.', 502)
+  const versions = (await versionsResponse.json()) as string[]
+  const version = versions[0]
+
+  const ddragonResponse = await fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/champion/Irelia.json`)
+  if (!ddragonResponse.ok) throw new ApiError('Could not load Irelia data for the current patch.', 502)
+  const ddragonPayload = (await ddragonResponse.json()) as { data: Record<string, any> }
+  const ddragon = ddragonPayload.data?.Irelia
+
+  // CommunityDragon's `latest` alias tracks the live patch (its version pins
+  // use build-suffixed strings, not Data Dragon patch numbers, so they cannot
+  // be addressed from here). The damage numbers are sanity-checked in
+  // parseIreliaKit and the payload degrades to damageData=false on a mismatch.
+  let bin: Record<string, any> | null = null
+  try {
+    const response = await fetch('https://raw.communitydragon.org/latest/game/data/characters/irelia/irelia.bin.json')
+    if (response.ok) {
+      bin = (await response.json()) as Record<string, any>
+    }
+  } catch {
+    // Community mirror unreachable; the kit below serves without damage data.
+  }
+
+  const kit = parseIreliaKit(version, ddragon, bin ?? {})
+  kitCache.set(KIT_CACHE_KEY, { expiresAt: Date.now() + 5 * 60 * 1_000, value: kit })
+  await writeCache('scans', KIT_CACHE_KEY, { value: kit, savedAt: Date.now() })
+  return kit
 }
 
 /* ------------------------------------------------------------------ *
@@ -2670,6 +3038,11 @@ export async function handleApiRequest(request: IncomingMessage, response: Serve
 
   if (url.pathname === '/champions') {
     sendJson(response, 200, await getStaticData())
+    return
+  }
+
+  if (url.pathname === '/calculator/kit') {
+    sendJson(response, 200, await getIreliaKit())
     return
   }
 

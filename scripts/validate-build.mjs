@@ -47,8 +47,9 @@ const loader = await createViteServer({
 const riot = await loader.ssrLoadModule('/server/riotApi.ts')
 const disk = await loader.ssrLoadModule('/server/diskCache.ts')
 
-const cachedStatic = await disk.readCache('scans', 'static-data-v2')
-const staticData = cachedStatic?.value
+const staticData = (await disk.readCache('scans', 'static-data-v4'))?.value
+  ?? (await disk.readCache('scans', 'static-data-v3'))?.value
+  ?? (await disk.readCache('scans', 'static-data-v2'))?.value
 if (!staticData) {
   console.error('[validate] No cached Data Dragon payload — run the builder first.')
   process.exit(2)
