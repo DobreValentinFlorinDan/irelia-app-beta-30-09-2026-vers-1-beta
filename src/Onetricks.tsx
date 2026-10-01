@@ -972,7 +972,7 @@ type OtpBuildLite = {
 
 type OtpCompareData = {
   patch: string
-  otp: { riotId: string; games: number; winRate: number; slots: OtpBuildLite['slots']; byOpponent: Record<string, OtpBuildLite> }
+  otp: { riotId: string; games: number; winRate: number; profile: { slots: OtpBuildLite['slots'] }; byOpponent: Record<string, OtpBuildLite> }
   baseline: { games: number; winRate: number; byOpponent: Record<string, OtpBuildLite> }
   previous: { riotId: string; patch: string; ireliaGames: number } | null
   slots: Array<{ slot: number; bestId: number | null; options: OtpSlotOptionData[] }>
@@ -1003,7 +1003,7 @@ function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragon
   if (!loaded || !data) return null
 
   const itemName = (id: number) => itemCatalog.get(id)?.name ?? `Item ${id}`
-  const otpSlotPick = (slot: number) => data.otp.slots.find((entry) => entry.slot === slot)?.options[0] ?? null
+  const otpSlotPick = (slot: number) => data.otp.profile?.slots?.find((entry) => entry.slot === slot)?.options[0] ?? null
   const opponents = Object.keys(data.baseline.byOpponent)
     .filter((key) => data.otp.byOpponent[key])
     .sort((a, b) => data.otp.byOpponent[b].games - data.otp.byOpponent[a].games)
