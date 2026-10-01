@@ -1030,7 +1030,18 @@ function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragon
 
   if (!loaded) return null
   if (!data) {
-    if (!failure) return null
+    if (!failure) {
+      return (
+        <section className="ot-card">
+          <div className="ot-card-head">
+            <h3>OTP of choice</h3>
+          </div>
+          <p className="ot-empty">
+            No OTP sourced yet — add one on the Data page (Name#TAG, then &quot;Source OTP history&quot;).
+          </p>
+        </section>
+      )
+    }
     return (
       <section className="ot-card">
         <div className="ot-card-head">
@@ -1219,6 +1230,13 @@ export default function OnetricksView({
         banRate={banRate}
       />
 
+      <OtpComparisonPanel
+        itemCatalog={itemCatalog}
+        championNames={championNames}
+        championFiles={championFiles}
+        ddragonVersion={ddragonVersion}
+      />
+
       {loading && !build && <p className="ot-empty">Loading build…</p>}
 
       {!loading && !build && (
@@ -1323,13 +1341,6 @@ export default function OnetricksView({
           </p>
         </>
       )}
-
-      <OtpComparisonPanel
-        itemCatalog={itemCatalog}
-        championNames={championNames}
-        championFiles={championFiles}
-        ddragonVersion={ddragonVersion}
-      />
     </div>
   )
 }
