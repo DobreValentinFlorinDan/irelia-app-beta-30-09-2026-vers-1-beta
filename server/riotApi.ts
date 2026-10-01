@@ -10,6 +10,7 @@ import {
   flushIreliaIndex,
   getCachedMatch,
   getCachedMatchForPlayer,
+  getCachedTimeline,
   getPlayerPosition,
   loadCacheWideIreliaMatches,
 } from './buildEngine.js'
@@ -866,6 +867,299 @@ export async function deepenMatchups(
 
   unsubscribeRate()
   return { coverage, requestsUsed, matchesAdded, pagesWalked, stopReason, candidates: resolved.length }
+}
+
+/* ------------------------------------------------------------------ *
+ * OTP of choice: deep, patch-bounded harvest + consensus comparison
+ * ------------------------------------------------------------------ */
+
+/**
+ * How strongly the OTP's agreement boosts an item's best-in-slot score. 0.5
+ * means an item the OTP always takes scores 1.5x its aggregate share — enough
+ * to settle close calls, never enough to crown a 5% item over a 60% one.
+ */
+const OTP_AGREEMENT_BOOST = 0.5
+
+export type OtpProfile = {
+  riotId: string
+  puuid: string
+  region: ScanRegion
+  harvestedAt: number
+  /** The patch the walk was scoped to; only games on it are kept. */
+  patch: string
+  /** Every on-patch ranked game of this player (Irelia and other champions). */
+  matchIds: string[]
+  /** Subset of matchIds where the player was on Irelia. */
+  ireliaMatchIds: string[]
+  games: number
+  ireliaGames: number
+}
+
+export type OtpHarvestResult = OtpProfile & {
+  pagesWalked: number
+  requestsUsed: number
+  matchesAdded: number
+  stopReason: 'patch-boundary' | 'budget' | 'max-pages' | 'no-games'
+}
+
+/**
+ * Walks one player's ranked history backward, page by page (100 games each),
+ * and stops at the first page with zero games on the current patch. That page
+ * IS the patch boundary: anything beyond it is last patch's meta, which can no
+ * longer be trusted for a current build recommendation.
+ */
+export async function harvestPlayer(
+  gameName: string,
+  tagLine: string,
+  region: ScanRegion,
+  report: ProgressReporter,
+  options: { maxRequests?: number; maxPages?: number } = {},
+): Promise<OtpHarvestResult> {
+  const maxRequests = options.maxRequests ?? 800
+  const maxPages = options.maxPages ?? 15
+  const routing = scanRegions[region]
+  const account = await getAccount(getActiveApiKey(), gameName.trim(), tagLine.trim(), routing.regional)
+  if (!account?.puuid) throw new ApiError('Riot could not resolve that Riot ID.', 404)
+  const riotId = `${gameName.trim()}#${tagLine.trim()}`
+
+  // Scope to the newest patch the cache already measures. When the cache is
+  // empty the patch is derived from the first fetched page instead.
+  const cached = await loadCacheWideIreliaMatches()
+  let patch = mostRecentPatch(cached)
+
+  let requestsUsed = 0
+  let matchesAdded = 0
+  let pagesWalked = 0
+  let games = 0
+  let ireliaGames = 0
+  const matchIds: string[] = []
+  const ireliaMatchIds: string[] = []
+  let stopReason: OtpHarvestResult['stopReason'] = 'patch-boundary'
+
+  report({
+    phase: 'otp',
+    message: `Resolved ${riotId} — walking ranked history back through patch ${patch || 'current'}…`,
+    done: 0,
+    total: 0,
+  })
+
+  for (let page = 0; page < maxPages; page += 1) {
+    if (requestsUsed >= maxRequests) { stopReason = 'budget'; break }
+    const ids = await riotGet<string[]>(
+      getActiveApiKey(),
+      routing.regional,
+      `/lol/match/v5/matches/by-puuid/${encodeURIComponent(account.puuid)}/ids?queue=420&count=100&start=${page * 100}`,
+    )
+    requestsUsed += 1
+    pagesWalked += 1
+    if (!ids.length) break
+
+    let pageOnPatch = 0
+    for (const matchId of ids) {
+      if (requestsUsed >= maxRequests) { stopReason = 'budget'; break }
+      const wasCached = await hasCache('matches', matchId)
+      const match = await getCachedMatchForPlayer(fetchJson, matchId, account.puuid, routing.regional)
+      if (!wasCached) {
+        requestsUsed += 1
+        matchesAdded += 1
+      }
+
+      const bodyPatch = String(match.info.gameVersion ?? '').split('.').slice(0, 2).join('.')
+      if (!patch) patch = bodyPatch
+      if (bodyPatch !== patch) continue
+
+      pageOnPatch += 1
+      games += 1
+      matchIds.push(matchId)
+      const player = match.info.participants.find((entry) => entry.puuid === account.puuid)
+      if (player?.championId === IRELIA_ID) {
+        ireliaGames += 1
+        ireliaMatchIds.push(matchId)
+        await getCachedTimeline(fetchJson, matchId, routing.regional)
+      }
+      report({
+        phase: 'otp',
+        message: `${games} games on patch ${patch} · ${ireliaGames} on Irelia`,
+        done: games,
+        total: 0,
+      })
+    }
+    if (pageOnPatch === 0) break
+  }
+
+  if (!games) stopReason = 'no-games'
+  if (pagesWalked >= maxPages && stopReason === 'patch-boundary') stopReason = 'max-pages'
+
+  const profile: OtpProfile = {
+    riotId,
+    puuid: account.puuid,
+    region,
+    harvestedAt: Date.now(),
+    patch,
+    matchIds,
+    ireliaMatchIds,
+    games,
+    ireliaGames,
+  }
+  await writeCache('otp', account.puuid, profile)
+  await writeCache('otp', 'active', { puuid: account.puuid, riotId, savedAt: Date.now() })
+
+  return { ...profile, pagesWalked, requestsUsed, matchesAdded, stopReason }
+}
+
+/** Rebuilds one player's cached Irelia games into build data, offline. */
+async function buildDataForPlayer(matchIds: string[], puuid: string, lane: OtpRole): Promise<MatchBuildData[]> {
+  const out: MatchBuildData[] = []
+  for (const id of matchIds) {
+    const record = await readCache<MatchRecord>('matches', id)
+    if (!record || record.info?.queueId !== 420) continue
+    const player = record.info.participants.find((entry) => entry.puuid === puuid)
+    if (!player || player.championId !== IRELIA_ID) continue
+    if (getPlayerPosition(player) !== lane) continue
+    const data = await buildMatchData(
+      // Offline adapter: timelines come from the disk cache only.
+      () => Promise.reject(new Error('offline')),
+      record,
+      puuid,
+      { withTimeline: true },
+    )
+    if (data) out.push(data)
+  }
+  return out
+}
+
+export type OtpSlotOption = {
+  id: number
+  games: number
+  share: number
+  winRate: number
+  /** How often the OTP takes this item in this slot (0..1). */
+  otpRate: number
+  agreement: boolean
+  /** share * (1 + boost * otpRate): agreement settles close calls. */
+  score: number
+}
+
+export type OtpCompare = {
+  patch: string
+  lane: OtpRole
+  otp: {
+    riotId: string
+    games: number
+    winRate: number
+    profile: BuildProfile
+    byOpponent: Record<string, BuildProfile>
+  }
+  baseline: {
+    games: number
+    winRate: number
+    profile: BuildProfile
+    byOpponent: Record<string, BuildProfile>
+  }
+  previous: {
+    riotId: string
+    patch: string
+    harvestedAt: number
+    ireliaGames: number
+    profile: BuildProfile
+  } | null
+  slots: Array<{ slot: number; bestId: number | null; options: OtpSlotOption[] }>
+}
+
+/** The active OTP's build vs everyone else's, with consensus-scored slots. */
+export async function compareOtpToBaseline(lane: OtpRole): Promise<OtpCompare> {
+  const active = await readCache<{ puuid: string; riotId: string; savedAt: number }>('otp', 'active')
+  if (!active) throw new ApiError('No OTP of choice sourced yet — add one on the Data page.', 404)
+  const profile = await readCache<OtpProfile>('otp', active.puuid)
+  if (!profile) throw new ApiError('The active OTP profile is missing — source it again.', 404)
+
+  const otpMatches = await buildDataForPlayer(profile.ireliaMatchIds, profile.puuid, lane)
+
+  // Everyone else: the whole cache-wide pool minus the OTP's own games. His
+  // harvest covers page 0 onward, which includes his scan-window games, so
+  // excluding these ids removes essentially all of his evidence.
+  const exclude = new Set(profile.ireliaMatchIds)
+  const baselineMatches = (await loadCacheWideIreliaMatches())
+    .filter((match) => !exclude.has(match.matchId) && (!match.position || match.position === lane || match.position === 'UNKNOWN'))
+
+  const otpProfile = aggregateProfile(otpMatches, 'lane')
+  const baselineProfile = aggregateProfile(baselineMatches, 'lane')
+
+  const groupByOpponent = (matches: MatchBuildData[]) => {
+    const groups = new Map<number, MatchBuildData[]>()
+    for (const match of matches) {
+      if (match.opponentChampionId == null) continue
+      const group = groups.get(match.opponentChampionId) ?? []
+      group.push(match)
+      groups.set(match.opponentChampionId, group)
+    }
+    const byOpponent: Record<string, BuildProfile> = {}
+    groups.forEach((group, opponentId) => { byOpponent[String(opponentId)] = aggregateProfile(group, 'lane') })
+    return byOpponent
+  }
+
+  // Previous OTP, when one was replaced: the "stack data over time" archive.
+  let previous: OtpCompare['previous'] = null
+  const keys = (await listCacheKeys('otp')).filter((key) => key !== 'active' && key !== active.puuid)
+  if (keys.length) {
+    const prior = await readCache<OtpProfile>('otp', keys.sort().pop() as string)
+    if (prior) {
+      const priorMatches = await buildDataForPlayer(prior.ireliaMatchIds, prior.puuid, lane)
+      previous = {
+        riotId: prior.riotId,
+        patch: prior.patch,
+        harvestedAt: prior.harvestedAt,
+        ireliaGames: prior.ireliaGames,
+        profile: aggregateProfile(priorMatches, 'lane'),
+      }
+    }
+  }
+
+  // Consensus scoring: aggregate options, boosted where the OTP converges.
+  const otpSlotShares = new Map<number, Map<number, number>>()
+  for (const slot of otpProfile.slots ?? []) {
+    const shares = new Map<number, number>()
+    for (const option of slot.options) shares.set(option.id, option.share)
+    otpSlotShares.set(slot.slot, shares)
+  }
+  const slots = (baselineProfile.slots ?? []).map((slot) => {
+    const otpShares = otpSlotShares.get(slot.slot) ?? new Map<number, number>()
+    const options: OtpSlotOption[] = slot.options
+      .map((option) => {
+        const otpRate = otpShares.get(option.id) ?? 0
+        return {
+          id: option.id,
+          games: option.games,
+          share: option.share,
+          winRate: option.winRate,
+          otpRate,
+          agreement: otpRate > 0,
+          score: option.share * (1 + OTP_AGREEMENT_BOOST * otpRate),
+        }
+      })
+      .sort((a, b) => b.score - a.score)
+    return { slot: slot.slot, bestId: options[0]?.id ?? null, options }
+  })
+
+  return {
+    patch: profile.patch,
+    lane,
+    otp: {
+      riotId: profile.riotId,
+      games: otpMatches.length,
+      winRate: otpMatches.length ? otpMatches.filter((match) => match.win).length / otpMatches.length : 0,
+      profile: otpProfile,
+      byOpponent: groupByOpponent(otpMatches),
+    },
+    baseline: {
+      games: baselineMatches.length,
+      winRate: baselineMatches.length ? baselineMatches.filter((match) => match.win).length / baselineMatches.length : 0,
+      profile: baselineProfile,
+      byOpponent: groupByOpponent(baselineMatches),
+    },
+    previous,
+    slots,
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -2518,6 +2812,53 @@ export async function handleApiRequest(request: IncomingMessage, response: Serve
       }
     }
     sendJson(response, 200, await runKoreanScan(params.tier, params.entryLimit, params.sampleSize, params.threshold, params.lane, () => {}, params.regions, params.minIreliaGames, params.rosterOnly))
+    return
+  }
+
+  // Deep, patch-bounded harvest of one chosen OTP's match history.
+  if (url.pathname === '/riot/otp-harvest-stream') {
+    const gameName = String(url.searchParams.get('gameName') ?? '').trim()
+    const tagLine = String(url.searchParams.get('tagLine') ?? '').trim()
+    const regionParam = (url.searchParams.get('region') ?? 'KR').toUpperCase()
+    const region = (regionParam in scanRegions ? regionParam : 'KR') as ScanRegion
+    if (!gameName || !tagLine) throw new ApiError('Give the OTP as Name#TAG.', 400)
+    const maxRequests = Math.min(Math.max(Number(url.searchParams.get('budget') ?? 800), 20), 2000)
+    const send = openEventStream(response)
+    const heartbeat = setInterval(() => response.write(': keep-alive\n\n'), 15_000)
+    try {
+      const report = (update: { phase: string; message: string; done: number; total: number }) => {
+        send({ type: 'progress', ...update })
+      }
+      const result = await harvestPlayer(gameName, tagLine, region, report, { maxRequests })
+      send({ type: 'result', result })
+    } catch (error) {
+      send({ type: 'error', message: error instanceof Error ? error.message : 'OTP harvest failed.' })
+    } finally {
+      clearInterval(heartbeat)
+      response.end()
+    }
+    return
+  }
+
+  // The active OTP of choice plus the archive of previously sourced profiles.
+  if (url.pathname === '/riot/otp-profile') {
+    const active = await readCache<{ puuid: string; riotId: string; savedAt: number }>('otp', 'active')
+    const profiles: Array<OtpProfile> = []
+    for (const key of await listCacheKeys('otp')) {
+      if (key === 'active') continue
+      const profile = await readCache<OtpProfile>('otp', key)
+      if (profile) profiles.push(profile)
+    }
+    profiles.sort((a, b) => b.harvestedAt - a.harvestedAt)
+    sendJson(response, 200, { active, profiles })
+    return
+  }
+
+  // The OTP's build vs everyone else's, with consensus-scored slots.
+  if (url.pathname === '/riot/otp-compare') {
+    const laneParam = (url.searchParams.get('lane') ?? 'TOP').toUpperCase()
+    const lane: OtpRole = laneParam === 'MID' ? 'MID' : 'TOP'
+    sendJson(response, 200, await compareOtpToBaseline(lane))
     return
   }
 
