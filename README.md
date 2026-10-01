@@ -96,6 +96,34 @@ Useful properties:
 Watch the key: a development key expires 24 hours after it is issued, and the
 100-requests-per-2-minutes limit is the real constraint on how fast a sweep runs.
 
+## When the production key arrives
+
+A production key lifts the ceiling roughly 50x (500 requests / 10 seconds instead
+of 100 / 2 minutes). The day it lands, replace `RIOT_API_KEY` in `.env.local`
+and run the wider passes in this order:
+
+```
+npm run db:build                                     # fresh sweep: harvests everything new
+npm run db:build -- --skip-scan --focus-top 10 --focus-target 30 --budget 6000
+npm run db:validate                                  # confirm the reference build still matches
+```
+
+Why this order, from measured data:
+
+- The **sweep** re-reads the ladders and pulls each Irelia one-trick's newest
+  games. Cached bodies cost no requests, so this only pays for genuinely new
+  matches — typically a few dozen per run.
+- **`--focus-top`** fills the most-played thin matchups from the opponent mains'
+  side. Yield is ~0-1 qualifying game per 100 requests at dev limits (a KR
+  Yasuo main's last 20 games contained zero Irelia games), so it only makes
+  sense at production volume: 6,000 requests buys roughly 30-60 matchup games.
+- **Do not use `--deepen` for coverage.** It walks history backwards, and the
+  patch guard now rejects every stale-patch game it finds, so it mostly spends
+  budget on bodies that can never count. Repeated sweeps accumulate current-patch
+  depth faster.
+- Finish with `db:validate` — the 8/8 reference diff (onetrick.gg / u.gg) should
+  keep passing; a sudden mismatch means the meta shifted, not a crash.
+
 ## Notes
 
 - The Riot web API is rate-limited by a local queue. The configured key allows
