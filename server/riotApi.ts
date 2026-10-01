@@ -873,13 +873,6 @@ export async function deepenMatchups(
  * OTP of choice: deep, patch-bounded harvest + consensus comparison
  * ------------------------------------------------------------------ */
 
-/**
- * How strongly the OTP's agreement boosts an item's best-in-slot score. 0.5
- * means an item the OTP always takes scores 1.5x its aggregate share — enough
- * to settle close calls, never enough to crown a 5% item over a 60% one.
- */
-const OTP_AGREEMENT_BOOST = 0.5
-
 /** How many patches of history the OTP harvest keeps (current + 2 previous). */
 const OTP_MAX_PATCHES = 3
 
@@ -906,6 +899,8 @@ export type OtpProfile = {
   patch: string
   /** Per-patch slices, newest patch first. */
   byPatch: Record<string, OtpPatchSlice>
+  /** Matchup fills: opponent champion id -> last automatic-fill attempt (ms). */
+  fills?: Record<string, number>
   matchIds: string[]
   ireliaMatchIds: string[]
   games: number
@@ -1052,73 +1047,67 @@ async function buildDataForPlayer(matchIds: string[], puuid: string, lane: OtpRo
   return out
 }
 
-export type OtpSlotOption = {
-  id: number
-  games: number
-  share: number
-  winRate: number
-  /** How often the OTP takes this item in this slot, recency-weighted (0..1). */
-  otpRate: number
-  agreement: boolean
-  /** share * (1 + boost * otpRate): agreement settles close calls. */
-  score: number
-}
+/** How long a failed automatic matchup fill blocks re-attempts (ms). */
+const OTP_FILL_RETRY_MS = 6 * 60 * 60 * 1000
+/** Automatic matchup fills stop once he has this many games there. */
+const OTP_FILL_TARGET = 5
+/** Request budget for one automatic matchup fill. */
+const OTP_FILL_BUDGET = 150
 
-export type OtpSlotCompare = {
+export type OtpScenarioSlot = {
   slot: number
-  /** The field's most-picked item in this slot. */
-  fieldTopId: number | null
+  /** The field's most-picked item in this slot, for this scenario. */
+  fieldId: number | null
+  fieldShare: number
   /** The OTP's most-picked item in this slot, recency-weighted. */
-  otpTopId: number | null
-  /** Consensus best (highest score); matches=true when his pick agrees. */
-  bestId: number | null
-  matches: boolean
-  options: OtpSlotOption[]
-}
-
-export type OtpMatchupCompare = {
-  opponentChampionId: number
-  opponentName: string
-  otpGames: number
-  fieldGames: number
-  otpFirstItemId: number | null
-  fieldFirstItemId: number | null
-  /** Consensus best first item for this matchup. */
-  bestId: number | null
+  otpId: number | null
+  otpShare: number
+  /** His pick and the field's pick are the same item. */
   matches: boolean
 }
 
 export type OtpCompare = {
   patch: string
   lane: OtpRole
+  /** null = the lane baseline; otherwise the selected matchup. */
+  opponent: number | null
   otp: {
     riotId: string
     games: number
     winRate: number
-    profile: BuildProfile
-    /** Per-patch profiles, newest first — the recency-weighted trust layers. */
-    byPatch: Array<{ patch: string; weight: number; games: number; profile: BuildProfile }>
-    byOpponent: Record<string, BuildProfile>
+    /** Per-patch trust layers, newest first. */
+    byPatch: Array<{ patch: string; weight: number; games: number }>
   }
-  baseline: {
-    games: number
-    winRate: number
-    profile: BuildProfile
-    byOpponent: Record<string, BuildProfile>
+  scenario: {
+    otpGames: number
+    fieldGames: number
+    otpWinRate: number
+    fieldWinRate: number
+    /** His games in this scenario are empty and an automatic fill is allowed. */
+    canFill: boolean
+    slots: OtpScenarioSlot[]
   }
   previous: {
     riotId: string
     patch: string
     harvestedAt: number
     ireliaGames: number
-    profile: BuildProfile
   } | null
-  slots: OtpSlotCompare[]
-  matchups: OtpMatchupCompare[]
 }
 
-/** The active OTP's build vs everyone else's, with consensus-scored slots. */
-export async function compareOtpToBaseline(lane: OtpRole): Promise<OtpCompare> {
+export type OtpFillResult = {
+  opponentChampionId: number
+  added: number
+  requestsUsed: number
+  stopReason: 'budget' | 'history-exhausted' | 'filled'
+}
+
+/**
+ * The active OTP's build vs everyone else's for ONE scenario: the lane
+ * baseline or a specific matchup. Each build-path slot compares the field's
+ * most-picked item against his, recency-weighted across his patches.
+ */
+export async function compareOtpToBaseline(lane: OtpRole, opponent: number | null): Promise<OtpCompare> {
   const active = await readCache<{ puuid: string; riotId: string; savedAt: number }>('otp', 'active')
   if (!active) throw new ApiError('No OTP of choice sourced yet — add one on the Data page.', 404)
   const profile = await readCache<OtpProfile>('otp', active.puuid)
@@ -1130,124 +1119,73 @@ export async function compareOtpToBaseline(lane: OtpRole): Promise<OtpCompare> {
     : { [profile.patch]: { matchIds: profile.matchIds, ireliaMatchIds: profile.ireliaMatchIds } }
   const patchOrder = Object.keys(byPatch) // newest first
 
-  // Everyone else: the whole cache-wide pool minus the OTP's own games. His
-  // harvest covers the recent pages, which include his scan-window games, so
-  // excluding these ids removes essentially all of his evidence.
+  // The field's evidence: everyone's cached games, his excluded, scenario-scoped.
   const exclude = new Set(profile.ireliaMatchIds)
-  const baselineMatches = (await loadCacheWideIreliaMatches())
+  let baselineMatches = (await loadCacheWideIreliaMatches())
     .filter((match) => !exclude.has(match.matchId) && (!match.position || match.position === lane || match.position === 'UNKNOWN'))
+  if (opponent != null) baselineMatches = baselineMatches.filter((match) => match.opponentChampionId === opponent)
 
-  const groupByOpponent = (matches: MatchBuildData[]) => {
-    const groups = new Map<number, MatchBuildData[]>()
-    for (const match of matches) {
-      if (match.opponentChampionId == null) continue
-      const group = groups.get(match.opponentChampionId) ?? []
-      group.push(match)
-      groups.set(match.opponentChampionId, group)
-    }
-    const byOpponent: Record<string, BuildProfile> = {}
-    groups.forEach((group, opponentId) => { byOpponent[String(opponentId)] = aggregateProfile(group, 'lane') })
-    return byOpponent
-  }
-
-  const staticData = await getStaticData()
-  const championNames = new Map(staticData.champions.map((champion) => [champion.id, champion.name]))
-
-  // Per-patch OTP matches, newest first; each patch is a trust layer.
+  // His evidence across patches; each patch is a recency-weighted trust layer.
   const patchMatches: Array<{ patch: string; matches: MatchBuildData[] }> = []
   for (const patch of patchOrder) {
     const slice = byPatch[patch]
     patchMatches.push({ patch, matches: await buildDataForPlayer(slice.ireliaMatchIds, profile.puuid, lane) })
   }
+  const otpMatchesAll = patchMatches.flatMap((entry) => entry.matches)
+  const otpMatchesScenario = opponent == null
+    ? otpMatchesAll
+    : otpMatchesAll.filter((match) => match.opponentChampionId === opponent)
   const otpByPatch: OtpCompare['otp']['byPatch'] = patchMatches.map((entry, index) => ({
     patch: entry.patch,
     weight: OTP_PATCH_WEIGHTS[Math.min(index, OTP_PATCH_WEIGHTS.length - 1)],
-    games: entry.matches.length,
-    profile: aggregateProfile(entry.matches, 'lane'),
+    games: opponent == null
+      ? entry.matches.length
+      : entry.matches.filter((match) => match.opponentChampionId === opponent).length,
   }))
-  const otpMatchesAll = patchMatches.flatMap((entry) => entry.matches)
-  const otpMatchesCurrent = patchMatches[0]?.matches ?? []
 
-  const baselineProfile = aggregateProfile(baselineMatches, 'lane')
+  const fieldProfile = aggregateProfile(baselineMatches, 'lane')
 
-  // Recency-weighted OTP slot rates: games from newer patches count more, so
-  // his build path is one blended view rather than three separate ones.
+  // His scenario picks, recency-weighted: newer patches count more.
   const weightedSlotTotals = new Map<number, number>()
   const weightedSlotCounts = new Map<number, Map<number, number>>()
-  for (const entry of otpByPatch) {
-    for (const slot of entry.profile.slots ?? []) {
+  patchMatches.forEach((entry, index) => {
+    const weight = OTP_PATCH_WEIGHTS[Math.min(index, OTP_PATCH_WEIGHTS.length - 1)]
+    const scenario = opponent == null
+      ? entry.matches
+      : entry.matches.filter((match) => match.opponentChampionId === opponent)
+    const scenarioProfile = aggregateProfile(scenario, 'lane')
+    for (const slot of scenarioProfile.slots ?? []) {
       const totalGames = slot.options.reduce((sum, option) => sum + option.games, 0)
-      weightedSlotTotals.set(slot.slot, (weightedSlotTotals.get(slot.slot) ?? 0) + entry.weight * totalGames)
+      weightedSlotTotals.set(slot.slot, (weightedSlotTotals.get(slot.slot) ?? 0) + weight * totalGames)
       const counts = weightedSlotCounts.get(slot.slot) ?? new Map<number, number>()
-      for (const option of slot.options) counts.set(option.id, (counts.get(option.id) ?? 0) + entry.weight * option.games)
+      for (const option of slot.options) counts.set(option.id, (counts.get(option.id) ?? 0) + weight * option.games)
       weightedSlotCounts.set(slot.slot, counts)
-    }
-  }
-
-  const slots: OtpSlotCompare[] = (baselineProfile.slots ?? []).map((slot) => {
-    const totals = weightedSlotTotals.get(slot.slot) ?? 0
-    const counts = weightedSlotCounts.get(slot.slot) ?? new Map<number, number>()
-    const options: OtpSlotOption[] = slot.options
-      .map((option) => {
-        const otpRate = totals > 0 ? (counts.get(option.id) ?? 0) / totals : 0
-        return {
-          id: option.id,
-          games: option.games,
-          share: option.share,
-          winRate: option.winRate,
-          otpRate,
-          agreement: otpRate > 0,
-          score: option.share * (1 + OTP_AGREEMENT_BOOST * otpRate),
-        }
-      })
-      .sort((a, b) => b.score - a.score)
-    const fieldTop = [...slot.options].sort((a, b) => b.games - a.games)[0] ?? null
-    const otpTopId = totals > 0 ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null : null
-    const bestId = options[0]?.id ?? null
-    return {
-      slot: slot.slot,
-      fieldTopId: fieldTop?.id ?? null,
-      otpTopId,
-      bestId,
-      matches: otpTopId !== null && otpTopId === bestId,
-      options,
     }
   })
 
-  // Head-to-head: his current-patch first item vs the field's per opponent,
-  // with the matchup-specific consensus best in the third column.
-  const otpByOpponent = groupByOpponent(otpMatchesAll)
-  const otpByOpponentCurrent = groupByOpponent(otpMatchesCurrent)
-  const baselineByOpponent = groupByOpponent(baselineMatches)
-  const matchups: OtpMatchupCompare[] = []
-  for (const key of Object.keys(baselineByOpponent)) {
-    const his = otpByOpponentCurrent[key]
-    if (!his) continue
-    const field = baselineByOpponent[key]
-    const hisFirst = [...(his.slots?.[0]?.options ?? [])].sort((a, b) => b.games - a.games)[0] ?? null
-    const fieldFirst = [...(field.slots?.[0]?.options ?? [])].sort((a, b) => b.games - a.games)[0] ?? null
-    const hisCounts = new Map<number, number>()
-    for (const option of his.slots?.[0]?.options ?? []) hisCounts.set(option.id, option.games)
-    const hisTotal = [...hisCounts.values()].reduce((sum, value) => sum + value, 0)
-    const scored = (field.slots?.[0]?.options ?? [])
-      .map((option) => ({
-        id: option.id,
-        score: option.share * (1 + OTP_AGREEMENT_BOOST * (hisTotal > 0 ? (hisCounts.get(option.id) ?? 0) / hisTotal : 0)),
-      }))
-      .sort((a, b) => b.score - a.score)
-    const bestId = scored[0]?.id ?? null
-    matchups.push({
-      opponentChampionId: Number(key),
-      opponentName: championNames.get(Number(key)) ?? `#${key}`,
-      otpGames: his.games,
-      fieldGames: field.games,
-      otpFirstItemId: hisFirst?.id ?? null,
-      fieldFirstItemId: fieldFirst?.id ?? null,
-      bestId,
-      matches: hisFirst?.id != null && hisFirst.id === bestId,
-    })
-  }
-  matchups.sort((a, b) => b.otpGames - a.otpGames)
+  const slots: OtpScenarioSlot[] = (fieldProfile.slots ?? []).map((slot) => {
+    const fieldTop = [...slot.options].sort((a, b) => b.games - a.games)[0] ?? null
+    const totals = weightedSlotTotals.get(slot.slot) ?? 0
+    const counts = weightedSlotCounts.get(slot.slot) ?? new Map<number, number>()
+    const otpTop = totals > 0 ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? null : null
+    const otpId = otpTop?.[0] ?? null
+    return {
+      slot: slot.slot,
+      fieldId: fieldTop?.id ?? null,
+      fieldShare: fieldTop?.share ?? 0,
+      otpId,
+      otpShare: totals > 0 && otpTop ? otpTop[1] / totals : 0,
+      matches: otpId !== null && otpId === (fieldTop?.id ?? null),
+    }
+  })
+
+  const winRate = (matches: MatchBuildData[]) => matches.length
+    ? matches.filter((match) => match.win).length / matches.length
+    : 0
+
+  const canFill = opponent != null
+    && otpMatchesScenario.length === 0
+    && ((profile.fills?.[String(opponent)] ?? 0) + OTP_FILL_RETRY_MS < Date.now())
 
   // Previous OTP, when one was replaced: the "stack data over time" archive.
   let previous: OtpCompare['previous'] = null
@@ -1255,15 +1193,11 @@ export async function compareOtpToBaseline(lane: OtpRole): Promise<OtpCompare> {
   if (keys.length) {
     const prior = await readCache<OtpProfile>('otp', keys.sort().pop() as string)
     if (prior) {
-      const priorSlices = Object.keys(prior.byPatch ?? {}).length ? prior.byPatch : { [prior.patch]: { matchIds: prior.matchIds, ireliaMatchIds: prior.ireliaMatchIds } }
-      const priorCurrentPatch = Object.keys(priorSlices)[0] ?? prior.patch
-      const priorMatches = await buildDataForPlayer(priorSlices[priorCurrentPatch].ireliaMatchIds, prior.puuid, lane)
       previous = {
         riotId: prior.riotId,
         patch: prior.patch,
         harvestedAt: prior.harvestedAt,
         ireliaGames: prior.ireliaGames,
-        profile: aggregateProfile(priorMatches, 'lane'),
       }
     }
   }
@@ -1271,24 +1205,106 @@ export async function compareOtpToBaseline(lane: OtpRole): Promise<OtpCompare> {
   return {
     patch: profile.patch || patchOrder[0] || '',
     lane,
+    opponent,
     otp: {
       riotId: profile.riotId,
       games: otpMatchesAll.length,
-      winRate: otpMatchesAll.length ? otpMatchesAll.filter((match) => match.win).length / otpMatchesAll.length : 0,
-      profile: otpByPatch[0]?.profile ?? aggregateProfile([], 'lane'),
+      winRate: winRate(otpMatchesAll),
       byPatch: otpByPatch,
-      byOpponent: otpByOpponent,
     },
-    baseline: {
-      games: baselineMatches.length,
-      winRate: baselineMatches.length ? baselineMatches.filter((match) => match.win).length / baselineMatches.length : 0,
-      profile: baselineProfile,
-      byOpponent: baselineByOpponent,
+    scenario: {
+      otpGames: otpMatchesScenario.length,
+      fieldGames: baselineMatches.length,
+      otpWinRate: winRate(otpMatchesScenario),
+      fieldWinRate: winRate(baselineMatches),
+      canFill,
+      slots,
     },
     previous,
-    slots,
-    matchups,
   }
+}
+
+/**
+ * The active OTP has no games in the chosen matchup: walk his history further
+ * back than the 3-patch window, keeping only games against that opponent, so
+ * the scenario comparison has something to show. Old-patch fills weigh at the
+ * lowest trust level.
+ */
+export async function deepenOtpMatchup(
+  opponentId: number,
+  lane: OtpRole,
+  report: ProgressReporter,
+  options: { maxRequests?: number } = {},
+): Promise<OtpFillResult> {
+  const maxRequests = options.maxRequests ?? OTP_FILL_BUDGET
+  const active = await readCache<{ puuid: string; riotId: string; savedAt: number }>('otp', 'active')
+  if (!active) throw new ApiError('No OTP of choice sourced yet — add one on the Data page.', 404)
+  const profile = await readCache<OtpProfile>('otp', active.puuid)
+  if (!profile) throw new ApiError('The active OTP profile is missing — source it again.', 404)
+  const routing = scanRegions[profile.region]
+
+  // Resume just before the end of the already-harvested history.
+  const startPage = Math.max(0, Math.floor(profile.matchIds.length / 100) - 1)
+
+  let requestsUsed = 0
+  let added = 0
+  let stopReason: OtpFillResult['stopReason'] = 'budget'
+
+  report({
+    phase: 'otp',
+    message: `Looking for ${profile.riotId}'s older games vs ${opponentId}…`,
+    done: 0,
+    total: 0,
+  })
+
+  for (let page = startPage; page < startPage + 10; page += 1) {
+    if (requestsUsed >= maxRequests) break
+    const ids = await riotGet<string[]>(
+      getActiveApiKey(),
+      routing.regional,
+      `/lol/match/v5/matches/by-puuid/${encodeURIComponent(profile.puuid)}/ids?queue=420&count=100&start=${page * 100}`,
+    )
+    requestsUsed += 1
+    if (!ids.length) { stopReason = 'history-exhausted'; break }
+
+    for (const matchId of ids) {
+      if (requestsUsed >= maxRequests) break
+      if (profile.matchIds.includes(matchId)) continue
+      const match = await getCachedMatchForPlayer(fetchJson, matchId, profile.puuid, routing.regional)
+      requestsUsed += 1
+      const data = await buildMatchData(
+        () => Promise.reject(new Error('offline')),
+        match,
+        profile.puuid,
+        { withTimeline: false },
+      )
+      if (!data || data.opponentChampionId !== opponentId) continue
+
+      added += 1
+      const bodyPatch = String(match.info.gameVersion ?? '').split('.').slice(0, 2).join('.')
+      const slice = profile.byPatch[bodyPatch] ?? (profile.byPatch[bodyPatch] = { matchIds: [], ireliaMatchIds: [] })
+      slice.matchIds.push(matchId)
+      slice.ireliaMatchIds.push(matchId)
+      profile.matchIds.push(matchId)
+      profile.ireliaMatchIds.push(matchId)
+      profile.games += 1
+      profile.ireliaGames += 1
+      report({
+        phase: 'otp',
+        message: `+${added} older game(s) vs ${opponentId} on patch ${bodyPatch}`,
+        done: added,
+        total: 0,
+      })
+      if (added >= OTP_FILL_TARGET) { stopReason = 'filled'; break }
+    }
+    if (stopReason === 'filled') break
+  }
+
+  // Record the attempt so automatic fills don't re-trigger immediately.
+  profile.fills = { ...(profile.fills ?? {}), [String(opponentId)]: Date.now() }
+  await writeCache('otp', profile.puuid, profile)
+
+  return { opponentChampionId: opponentId, added, requestsUsed, stopReason }
 }
 
 /* ------------------------------------------------------------------ *
@@ -2992,7 +3008,33 @@ export async function handleApiRequest(request: IncomingMessage, response: Serve
   if (url.pathname === '/riot/otp-compare') {
     const laneParam = (url.searchParams.get('lane') ?? 'TOP').toUpperCase()
     const lane: OtpRole = laneParam === 'MID' ? 'MID' : 'TOP'
-    sendJson(response, 200, await compareOtpToBaseline(lane))
+    const opponentParam = url.searchParams.get('opponent')
+    const opponent = opponentParam && Number(opponentParam) > 0 ? Number(opponentParam) : null
+    sendJson(response, 200, await compareOtpToBaseline(lane, opponent))
+    return
+  }
+
+  // The active OTP has no games in the chosen matchup: walk his older history
+  // for that matchup specifically and stream the progress.
+  if (url.pathname === '/riot/otp-deepen-matchup') {
+    const opponentId = Number(url.searchParams.get('opponent') ?? 0)
+    const laneParam = (url.searchParams.get('lane') ?? 'TOP').toUpperCase()
+    const lane: OtpRole = laneParam === 'MID' ? 'MID' : 'TOP'
+    if (!opponentId) throw new ApiError('Give the opponent champion id.', 400)
+    const send = openEventStream(response)
+    const heartbeat = setInterval(() => response.write(': keep-alive\n\n'), 15_000)
+    try {
+      const report = (update: { phase: string; message: string; done: number; total: number }) => {
+        send({ type: 'progress', ...update })
+      }
+      const result = await deepenOtpMatchup(opponentId, lane, report)
+      send({ type: 'result', result })
+    } catch (error) {
+      send({ type: 'error', message: error instanceof Error ? error.message : 'Matchup fill failed.' })
+    } finally {
+      clearInterval(heartbeat)
+      response.end()
+    }
     return
   }
 
