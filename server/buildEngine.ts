@@ -10,6 +10,11 @@ export type MatchRecord = {
     queueId: number
     gameVersion: string
     gameCreation: number
+    /**
+     * Present on match-v5 payloads, but not guaranteed: callers fall back to the
+     * participant's `timePlayed`, so treat it as optional rather than required.
+     */
+    gameDuration?: number
     participants: Array<Record<string, any>>
   }
 }

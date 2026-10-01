@@ -20,7 +20,7 @@ import type {
   ProgressReporter,
   Routing as EngineRouting,
 } from './buildEngine.js'
-import { cacheDirectory, cacheSize, clearCache, deleteCache, listCacheKeys, readCache, writeCache } from './diskCache.js'
+import { cacheDirectory, cacheSize, clearCache, deleteCache, hasCache, listCacheKeys, readCache, writeCache } from './diskCache.js'
 import {
   analyseSkillOrder,
   matchWeight,
@@ -1025,7 +1025,9 @@ async function getPlayerReport(puuid: string, routing: 'EUROPE' | 'ASIA', count:
  * ------------------------------------------------------------------ */
 
 const tierPriority: Record<Exclude<OtpTier, 'all'>, number> = { challenger: 3, grandmaster: 2, master: 1, emerald: 0 }
-const leaguePaths: Record<Exclude<OtpTier, 'all'>, string> = {
+/** Tiers with a dedicated apex-league endpoint; emerald has none (see below). */
+type ApexTier = Exclude<OtpTier, 'all' | 'emerald'>
+const leaguePaths: Record<ApexTier, string> = {
   challenger: '/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5',
   grandmaster: '/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5',
   master: '/lol/league/v4/masterleagues/by-queue/RANKED_SOLO_5x5',
@@ -1353,7 +1355,10 @@ export async function runKoreanScan(
     const matches: MatchBuildData[] = []
     let name = `${candidate.region} ${candidate.tier} candidate`
     for (const matchId of matchIds) {
-      const alreadyCached = await readCache<MatchRecord>('matches', matchId)
+      // `getCachedMatch` already consults the disk cache, so reading the entry
+      // here first only parsed every match body twice. `hasCache` answers the
+      // hit/miss bookkeeping without the second JSON parse.
+      const alreadyCached = await hasCache('matches', matchId)
       const match = await getCachedMatch(fetchJson, matchId, candidate.routing.regional)
       if (alreadyCached) cacheHits += 1
       else newGames += 1
@@ -1361,9 +1366,14 @@ export async function runKoreanScan(
         scannedSlots += 1
         continue
       }
-      const data = await buildMatchData(fetchJson, match, candidate.puuid, { withTimeline: true, routing: candidate.routing.regional })
-      if (data) matches.push(data)
       const player = match.info.participants.find((entry) => entry.puuid === candidate.puuid)
+      // Only Irelia games are ever aggregated: `collectIreliaMatches` feeds every
+      // profile, matchup and recommendation, and `loadCacheWideIreliaMatches`
+      // skips non-Irelia records outright. Fetching a timeline for the rest of the
+      // sample spent roughly half the key's budget on data nothing reads.
+      const withTimeline = player?.championId === IRELIA_ID
+      const data = await buildMatchData(fetchJson, match, candidate.puuid, { withTimeline, routing: candidate.routing.regional })
+      if (data) matches.push(data)
       if (player?.riotIdGameName) {
         name = player.riotIdTagline ? `${player.riotIdGameName}#${player.riotIdTagline}` : String(player.riotIdGameName)
       }
@@ -1747,7 +1757,7 @@ async function buildMatchups(patch: string, lane: OtpRole): Promise<MatchupsResp
 
   const staticData = await getStaticData()
   const championNames = new Map<number, string>(
-    (staticData as { champions: Array<{ id: number; name: string }> }).champions.map((champion) => [champion.id, champion.name]),
+    staticData.champions.map((champion) => [champion.id, champion.name]),
   )
 
   const groups = new Map<number, MatchBuildData[]>()
@@ -1830,9 +1840,36 @@ async function buildMeta(patch: string, lane: OtpRole, limit: number, sinceHours
  * Static (Data Dragon) data
  * ------------------------------------------------------------------ */
 
-const staticDataCache = new Map<string, { expiresAt: number; value: unknown }>()
+/** One champion as normalised out of Data Dragon's champion.json. */
+export type StaticChampion = { id: number; name: string; ddragonId: string }
 
-async function getStaticData() {
+/** One purchasable item as normalised out of Data Dragon's item.json. */
+export type StaticItem = {
+  id: number
+  name: string
+  plaintext: string
+  description: string
+  image: string
+  stats: Record<string, number>
+  gold: number
+  purchasable: boolean
+  maps: Record<string, boolean>
+}
+
+/** A rune tree (`isTree`) or one rune within a tree. */
+export type StaticRune = { id: number; name: string; icon: string; isTree?: boolean; tree?: string }
+
+/** Everything the client needs from Data Dragon, cached in memory and on disk. */
+export type StaticData = {
+  version: string
+  champions: StaticChampion[]
+  items: StaticItem[]
+  runes: StaticRune[]
+}
+
+const staticDataCache = new Map<string, { expiresAt: number; value: StaticData }>()
+
+async function getStaticData(): Promise<StaticData> {
   // Versioned key: the cached payload is trusted wholesale on a cold boot, so a
   // shape change (champions gained `ddragonId`) must invalidate it. Bump this
   // whenever the returned object's shape changes.
@@ -1842,7 +1879,7 @@ async function getStaticData() {
 
   // Persist across restarts so a cold boot does not always re-hit Data Dragon.
   if (!cached) {
-    const onDisk = await readCache<{ value: { version: string } }>('scans', cacheKey)
+    const onDisk = await readCache<{ value: StaticData }>('scans', cacheKey)
     if (onDisk?.value?.version) {
       staticDataCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1_000, value: onDisk.value })
       return onDisk.value

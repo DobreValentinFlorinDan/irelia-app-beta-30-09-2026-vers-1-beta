@@ -390,15 +390,6 @@ type BuildProfile = {
   keystones: ServerRuneShare[]
   runeShards: ServerRuneShare[]
 }
-/** Wilson score interval returned by the server for every proportion. */
-type ConfidenceInterval = {
-  estimate: number
-  low: number
-  high: number
-  sampleSize: number
-  effectiveSampleSize: number
-  confidence: number
-}
 
 /** A complete finished build, optimised as a whole rather than as loose items. */
 type ItemSetEntry = {
@@ -1199,7 +1190,7 @@ function DraftView({
           <>
             <div className="live-action-row">
               <p className="microcopy">Reads only your local League Client during champion select. The Riot web API key is not used for this.</p>
-              <button type="button" className="action-button secondary-action" onClick={readLobby} disabled={busy !== null}>
+              <button type="button" className="action-button secondary-action" onClick={() => readLobby()} disabled={busy !== null}>
                 {busy === 'lobby' ? 'Reading…' : 'Read champ select'}
               </button>
             </div>
@@ -2082,8 +2073,12 @@ function App() {
    * true current game patch from `info.gameVersion`. Sending the Data Dragon
    * version as a patch filter matched nothing. An empty value tells the server to
    * pick the most recent patch that actually has data.
+   *
+   * Annotated `string` rather than inferred: `const activePatch = ''` would narrow
+   * to the empty-string literal, collapsing the `activePatch ? ...` query spreads
+   * to `never` and breaking the URLSearchParams overload.
    */
-  const activePatch = ''
+  const activePatch: string = ''
 
   const lobbyAllyIds = lobby?.myTeam.map((pick) => pick.championId).filter((id) => id > 0 && id !== 39) ?? []
   const lobbyEnemyIds = lobby?.theirTeam.map((pick) => pick.championId).filter((id) => id > 0) ?? []
