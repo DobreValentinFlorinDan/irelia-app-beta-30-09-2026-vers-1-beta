@@ -2212,8 +2212,9 @@ const staticDataCache = new Map<string, { expiresAt: number; value: StaticData }
 async function getStaticData(): Promise<StaticData> {
   // Versioned key: the cached payload is trusted wholesale on a cold boot, so a
   // shape change (champions gained `ddragonId`) must invalidate it. Bump this
-  // whenever the returned object's shape changes.
-  const cacheKey = 'static-data-v2'
+  // whenever the returned object's shape changes. v3: non-purchasable SR items
+  // (quest rewards, elixirs) are now included so their icons render.
+  const cacheKey = 'static-data-v3'
   const cached = staticDataCache.get(cacheKey)
   if (cached && cached.expiresAt > Date.now()) return cached.value
 
@@ -2303,7 +2304,11 @@ async function getStaticData(): Promise<StaticData> {
         purchasable: item.gold.purchasable,
         maps: item.maps,
       }))
-      .filter((item) => item.id > 0 && item.purchasable && item.maps?.['11']),
+      // Keep every Summoner's Rift item, purchasable or not: non-purchasable
+      // items (quest rewards, elixirs like 2152 Elixir of Force) still appear
+      // in real match inventories, and without a catalog entry the UI renders
+      // them as broken-looking placeholder tiles.
+      .filter((item) => item.id > 0 && item.maps?.['11']),
     runes: runeData.flatMap((tree) => [
       { id: tree.id, name: tree.name, icon: tree.icon, isTree: true },
       ...tree.slots.flatMap((slot) => slot.runes.map((rune) => ({ ...rune, tree: tree.name }))),

@@ -986,21 +986,42 @@ function OtpComparisonPanel({ itemCatalog, championNames, championFiles, ddragon
 }) {
   const [data, setData] = useState<OtpCompareData | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [failure, setFailure] = useState('')
 
   useEffect(() => {
     let cancelled = false
     void fetch('/api/riot/otp-compare?lane=TOP')
       .then((response) => {
-        if (!response.ok) throw new Error(String(response.status))
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
         return response.json()
       })
       .then((json: OtpCompareData) => { if (!cancelled) setData(json) })
-      .catch(() => { if (!cancelled) setData(null) })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setData(null)
+          // 404 = no OTP sourced yet (normal); anything else deserves a visible note.
+          const message = reason instanceof Error ? reason.message : 'unavailable'
+          setFailure(message.startsWith('HTTP 404') ? '' : message)
+        }
+      })
       .finally(() => { if (!cancelled) setLoaded(true) })
     return () => { cancelled = true }
   }, [])
 
-  if (!loaded || !data) return null
+  if (!loaded) return null
+  if (!data) {
+    if (!failure) return null
+    return (
+      <section className="ot-card">
+        <div className="ot-card-head">
+          <h3>OTP of choice</h3>
+        </div>
+        <p className="ot-empty">
+          Comparison unavailable ({failure}) — restart the app if this persists.
+        </p>
+      </section>
+    )
+  }
 
   const itemName = (id: number) => itemCatalog.get(id)?.name ?? `Item ${id}`
   const otpSlotPick = (slot: number) => data.otp.profile?.slots?.find((entry) => entry.slot === slot)?.options[0] ?? null
