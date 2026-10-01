@@ -58,6 +58,35 @@ clears it; `electron/main.cjs` also clears it for the child server process.
 - `npm run server`: run the standalone local API + client server.
 - `npm run desktop`: build, then open the Electron desktop app.
 - `npm run desktop:server`: open the Electron app against an existing build.
+- `npm run db:build`: headless cache builder (see below).
+- `npm run db:validate`: diff the cached build evidence against a reference.
+
+## Rebuilding the local database
+
+The app's data lives in a JSON cache under `cache/` (there is no SQL database).
+`scripts/build-database.mjs` populates it by calling the same `runKoreanScan`
+the Scan button calls, but with no browser attached, so a multi-hour ladder
+sweep is not tied to an open window and progress lands in stdout.
+
+```
+npm run db:build                                     # full 4-region ladder sweep
+npm run db:build -- --roster                         # just the curated OTPs
+npm run db:build -- --skip-scan --deepen 30 --budget 8000
+npm run db:validate                                  # report + reference diff
+```
+
+Useful properties:
+
+- **Resumable.** Match bodies are cached permanently and already-cached matches
+  cost no API request, so re-running only pays for games that are genuinely new.
+- **Timelines are fetched only for Irelia games.** Every aggregation
+  (`buildMeta`, `buildMatchups`, `buildRecommendation`) filters to Irelia
+  participants, so pulling a timeline for any other game spends budget on data
+  nothing reads.
+- **Budgeted.** `--budget` caps how many Riot requests a deepen pass may spend.
+
+Watch the key: a development key expires 24 hours after it is issued, and the
+100-requests-per-2-minutes limit is the real constraint on how fast a sweep runs.
 
 ## Notes
 

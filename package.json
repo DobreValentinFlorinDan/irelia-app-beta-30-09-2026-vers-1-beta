@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "lint": "oxlint",
     "server": "node server/server.mjs",
+    "db:build": "node scripts/build-database.mjs",
+    "db:validate": "node scripts/validate-build.mjs",
     "desktop": "npm run build && electron .",
     "desktop:dev": "electron . --dev",
     "desktop:server": "electron ."
